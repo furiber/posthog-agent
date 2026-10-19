@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Analytics Audit Agent — Architecture</title>
+<style>
+  :root {
+    --bg: #0b0e14; --panel: #10141f; --line: #222b3d; --ink: #d7dde8; --dim: #8a93a6;
+    --green: #7ee0c0; --blue: #7eb8ff; --amber: #ffd27e; --violet: #c5a3ff; --red: #ff9e9e;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 28px; font: 13px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--ink); background: var(--bg); }
+  .wrap { max-width: 980px; margin: 0 auto; }
+  h1 { font-size: 17px; margin: 0 0 2px; color: var(--green); letter-spacing: .3px; }
+  .sub { color: var(--dim); margin: 0 0 18px; }
+  .badges { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 22px; }
+  .badge { border: 1px solid var(--line); background: var(--panel); border-radius: 999px; padding: 5px 12px; font-size: 11.5px; color: var(--ink); }
+  .badge b { color: var(--green); font-weight: 600; }
+  .card { border: 1px solid var(--line); background: var(--panel); border-radius: 10px; padding: 12px 14px; margin: 0 0 0; }
+  .card h2 { font-size: 12px; letter-spacing: .8px; text-transform: uppercase; color: var(--dim); margin: 0 0 8px; font-weight: 600; }
+  .card h2 .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 7px; vertical-align: 0; }
+  .flow { display: flex; flex-direction: column; gap: 0; }
+  .arrow { text-align: center; color: var(--dim); padding: 3px 0; font-size: 15px; line-height: 1; }
+  .arrow .lbl { font-size: 10.5px; display: block; color: var(--dim); }
+  .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .do { border: 1.5px solid #2f6d5f; border-radius: 12px; padding: 14px; background: linear-gradient(180deg, rgba(126,224,192,.045), rgba(126,224,192,0)); }
+  .do > h2 { color: var(--green); font-size: 13px; text-transform: none; letter-spacing: .2px; }
+  .roles { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px; }
+  .role { border: 1px dashed var(--line); border-radius: 9px; padding: 10px 11px; background: #0d1119; }
+  .role h3 { margin: 0 0 4px; font-size: 12.5px; color: var(--ink); font-weight: 600; }
+  .role .model { font-size: 10.5px; color: var(--violet); margin: 0 0 6px; }
+  .role ul { margin: 0; padding-left: 16px; color: var(--dim); font-size: 11.5px; }
+  .role li { margin: 1px 0; }
+  .role.core { grid-column: 1 / -1; }
+  .tag { display: inline-block; border: 1px solid var(--line); border-radius: 5px; padding: 0 6px; font-size: 10.5px; color: var(--dim); margin: 1px 2px 1px 0; }
+  .evidence { border: 1px solid #2c5d46; background: rgba(126,224,192,.05); border-radius: 9px; padding: 10px 12px; margin-top: 10px; }
+  .evidence h3 { margin: 0 0 4px; color: var(--green); font-size: 12.5px; }
+  .evidence p { margin: 0; color: var(--dim); font-size: 11.5px; }
+  .loop { display: grid; grid-template-columns: 1fr auto 1fr auto 1fr auto 1fr; gap: 6px; align-items: stretch; margin-top: 10px; }
+  .loop .step { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; background: #0d1119; font-size: 11.5px; }
+  .loop .step b { display: block; font-size: 12px; }
+  .loop .step span { color: var(--dim); }
+  .loop .link { align-self: center; color: var(--dim); font-size: 14px; }
+  .loop .verdict { color: var(--amber); }
+  .loop .note { grid-column: 1 / -1; color: var(--dim); font-size: 11px; margin-top: 2px; }
+  .side { margin-top: 12px; }
+  .side .card { margin-bottom: 10px; }
+  .kv { display: grid; grid-template-columns: auto 1fr; gap: 2px 14px; font-size: 11.5px; }
+  .kv dt { color: var(--dim); }
+  .kv dd { margin: 0; color: var(--ink); }
+  .pill { display: inline-block; border-radius: 4px; padding: 0 6px; font-size: 10.5px; }
+  .pill.b { background: rgba(126,184,255,.12); color: var(--blue); }
+  .pill.v { background: rgba(197,163,255,.12); color: var(--violet); }
+  .pill.a { background: rgba(255,210,126,.12); color: var(--amber); }
+  .pill.g { background: rgba(126,224,192,.12); color: var(--green); }
+  .pill.r { background: rgba(255,158,158,.12); color: var(--red); }
+  .note { border: 1px solid var(--line); border-radius: 9px; background: #0d1119; padding: 10px 12px; margin-top: 12px; color: var(--dim); font-size: 11.5px; }
+  .note b { color: var(--ink); }
+  code { color: var(--green); font-size: 11.5px; }
+  .caption { color: var(--dim); font-size: 11px; margin: 2px 0 10px; }
+  .local { color: var(--dim); font-size: 11px; margin-top: 6px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>Analytics Audit Agent — architecture</h1>
+  <p class="sub">One run: crawl a website's analytics instrumentation, validate it adversarially, ship a five-section markdown report over SSE.</p>
+
+  <div class="badges">
+    <span class="badge"><b>Agent framework:</b> Cloudflare Agents SDK — <code>agents</code> npm pkg (agent lives in a Durable Object)</span>
+    <span class="badge"><b>Model access:</b> OpenRouter — OpenAI-compatible endpoint</span>
+    <span class="badge"><b>Browser:</b> Cloudflare Browser Rendering — <code>@cloudflare/playwright</code></span>
+    <span class="badge"><b>Grader:</b> TypeSafe Jev — systemone choice grader</span>
+    <span class="badge"><b>Config:</b> cloudflare.config.ts (cf CLI)</span>
+  </div>
+
+  <div class="flow">
+
+    <div class="card">
+      <h2><span class="dot" style="background:var(--blue)"></span>Client</h2>
+      Placeholder status/entry page (SSE consumer) &nbsp;·&nbsp; <code>curl -N POST /run {url, pageBudget}</code> &nbsp;·&nbsp; report fetch <code>GET /runs/:id/report.md</code>
+      <div class="local">GET / — status page · GET /health — liveness</div>
+    </div>
+
+    <div class="arrow">↓<span class="lbl">POST /run → getAgentByName(ANALYTICS_AUDIT_AGENT, runId) — one DO instance per run</span></div>
+
+    <div class="card">
+      <h2><span class="dot" style="background:var(--blue)"></span>Worker fetch handler — Cloudflare Workers</h2>
+      Validates <code>{ url, pageBudget }</code> (public http(s) only, budget ≤ 200) → forwards to the Durable Object agent → pipes the SSE response straight back.
+    </div>
+
+    <div class="arrow">↓<span class="lbl">agent.fetch() → onRequest → SSE stream (run_started · phase · page · tool_step · critique · jev_verdict · report · done)</span></div>
+
+    <div class="do">
+      <h2>AnalyticsAuditAgent — Durable Object (Cloudflare Agents SDK)</h2>
+      All four roles share this one agent state — evidence IDs survive every handoff. The adversarial reviewer's fresh context is the sole exception (a fresh model call, never a separate agent session).
+
+      <div class="roles">
+        <div class="role core">
+          <h3>① Crawler — tool-stepping loop</h3>
+          <div class="model">Agents SDK <code>streamText</code> + tools → z-ai/glm-5.3-flash via OpenRouter (reasoning pinned low)</div>
+          <ul>
+            <li>Tools: <span class="tag">sitemap_discover(url, pageBudget)</span><span class="tag">load_page(url)</span><span class="tag">inspect_dom()</span><span class="tag">interact(selector|preset)</span><span class="tag">record_evidence(...)</span><span class="tag">finish_crawl(reason)</span></li>
+            <li>load_page injects request interception: beacons on the wire (PostHog /e/, /i/v0/e/, /batch, /decide · GA4 collect?v=2 en= · GTM gtm.js · gtag.js)</li>
+            <li>interact fires scripted interactions: CTA click · consent toggle · honeypot-ignored form submit</li>
+            <li>Tool retries: 4 (8 for pages that fail to render / SPA-complex) · 40 successful steps per page</li>
+            <li>May run several browser contexts in parallel — tool-level concurrency, never separate agent sessions</li>
+          </ul>
+        </div>
+        <div class="role">
+          <h3>② Synthesizer</h3>
+          <div class="model">z-ai/glm-5.3-flash via OpenRouter (one small JSON call)</div>
+          <ul>
+            <li>Events/tags/gaps tables assembled deterministically from evidence</li>
+            <li>Naming convention derived from the wire (default: object_action snake_case; GA4 terminology-locked)</li>
+            <li>Single validated model step: the tracking plan (server-checked evidence IDs + convention)</li>
+          </ul>
+        </div>
+        <div class="role">
+          <h3>③ Adversarial reviewer</h3>
+          <div class="model">deepseek/deepseek-v4.1-flash via OpenRouter — fresh context</div>
+          <ul>
+            <li>Critique-only prompt; verifies every claim against cited evidence</li>
+            <li>Hunts: hallucinated events · missed events · misclassified dest/interaction · convention violations · wrong recommendations</li>
+            <li>Outputs structured critique items (≤12, each citing evidence IDs)</li>
+          </ul>
+        </div>
+        <div class="role">
+          <h3>④ Jev adjudicator</h3>
+          <div class="model">TypeSafe systemone API — <code>api.typesafe.ai/v1/systemone</code> · model jev-latest</div>
+          <ul>
+            <li>Grades each critique: <span class="pill g">Correct</span> <span class="pill a">Partially Correct</span> <span class="pill r">Incorrect</span></li>
+            <li>Only Jev-Correct critiques propagate; &lt;0.7 confidence flagged for human review</li>
+            <li>Structured claim+evidence state in, strictly structured JSON out — never one of the report-writing models</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="evidence">
+        <h3>Evidence store — append-only, Durable Object SQLite</h3>
+        <p>Every beacon / snippet / DOM observation gets an ID (<code>E000001…</code>): {site, pageUrl, timestamp, kind: beacon|snippet|dom, payload, interactionStepId?}. <b>No claim may exist without an evidence ID</b> — enforced again at the final gate.</p>
+      </div>
+
+      <div class="loop">
+        <div class="step"><b>Draft</b><span>synthesizer output, evidence-cited</span></div>
+        <div class="link">→</div>
+        <div class="step"><b>Adversarial critique</b><span>fresh context reviewer</span></div>
+        <div class="link">→</div>
+        <div class="step"><b>Jev grade</b><span class="verdict">verdict per critique</span></div>
+        <div class="link">→</div>
+        <div class="step"><b>Revise</b><span>apply only Correct; contradictions ship contested</span></div>
+        <div class="note">Validation loop: repeat until a round produces zero Jev-Correct critiques, or max 3 rounds. Items contested at lock ship with an explicit contested flag — never dropped. Round log goes in the report appendix.</div>
+      </div>
+
+      <div class="loop" style="margin-top:8px">
+        <div class="step"><b>Final gate</b><span>every claim ≥1 existing evidence ID · naming table passes the derived (or default) convention check · diffable current→proposed · Jev round log included</span></div>
+        <div class="link">→</div>
+        <div class="step"><b>Markdown report</b><span>① Tag inventory ② Events & interactions ③ Naming conventions ④ Gaps & misconfigurations ⑤ Recommendations + appendices</span></div>
+        <div class="link">→</div>
+        <div class="step"><b>Ship</b><span>SSE <code>report</code> event + persisted (<code>reports</code> table) · partial-evidence error report if budgets exhaust — never fabrication</span></div>
+      </div>
+    </div>
+
+    <div class="row2 side">
+      <div class="card">
+        <h2><span class="dot" style="background:var(--violet)"></span>OpenRouter — OpenAI-compatible endpoint <span class="pill v">2 model call sites</span></h2>
+        <dl class="kv">
+          <dt>Crawler tool loop</dt><dd>Agents SDK <code>streamText</code> + tool schemas → <code>z-ai/glm-5.3-flash</code> ($0.048/$0.20 per M)</dd>
+          <dt>One-shot JSON calls</dt><dd>synthesizer + reviewer → glm-5.3-flash / <code>deepseek/deepseek-v4.1-flash</code> ($0.063/$0.12 per M)</dd>
+          <dt>Transport</dt><dd><code>POST {OPENROUTER_BASE_URL}/chat/completions</code>, response_format json_object, usage included</dd>
+          <dt>Swap to AI Gateway</dt><dd>point OPENROUTER_BASE_URL at your gateway's OpenAI-compatible URL</dd>
+        </dl>
+        <div class="local">Weak flash-tier models by design — reliability comes from the loop + Jev adjudication, not model intelligence. Every prompt: one job, small structured output.</div>
+      </div>
+      <div>
+        <div class="card">
+          <h2><span class="dot" style="background:var(--blue)"></span>Cloudflare Browser Rendering <span class="pill b">@cloudflare/playwright</span></h2>
+          <dl class="kv">
+            <dt>Deployed</dt><dd><code>launch(env.BROWSER)</code> — Browser Run binding, crawl runs natively on Workers</dd>
+            <dt>Local dev</dt><dd>same <code>launch(env.BROWSER)</code> — runs local Chrome (standard Playwright under the fork) against the same tool interface</dd>
+            <dt>Capture</dt><dd>request interception incl. gzip PostHog bodies · script/DOM tag detection · consent-state</dd>
+          </dl>
+        </div>
+        <div class="card">
+          <h2><span class="dot" style="background:var(--green)"></span>Run budgets — cloudflare.config.ts · AGENT_CONFIG</h2>
+          <dl class="kv">
+            <dt>pageBudget</dt><dd>default 50 · hard max 200</dd>
+            <dt>Tool steps</dt><dd>max 40 successful per page</dd>
+            <dt>Retries</dt><dd>4 (8 complex/failed pages)</dd>
+            <dt>Wall clock</dt><dd>600 000 ms per run</dd>
+            <dt>Validation rounds</dt><dd>max 3</dd>
+            <dt>Crawl parallelism</dt><dd>2 browser contexts</dd>
+          </dl>
+        </div>
+      </div>
+    </div>
+
+    <div class="note">
+      <b>"Are you using v0?"</b> No. Nothing in this build is v0-generated. The locked stack: <b>Cloudflare Agents SDK</b> (<code>agents</code> npm package — the agent is a Durable Object, the SDK runs the crawler's tool-stepping loop) for the agent framework, <b>OpenRouter</b> for all chat model access (OpenAI-compatible endpoint, flash-tier GLM 5.3 Flash + DeepSeek 4.1 flash), <b>Cloudflare Browser Rendering</b> for browsing, and the <b>TypeSafe Jev</b> systemone API as the separate grader call site. No second agent framework was introduced.
+    </div>
+
+  </div>
+</div>
+</body>
+</html>
