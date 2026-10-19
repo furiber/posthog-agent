@@ -43,9 +43,9 @@ export interface ModelEnv {
 
 export const MODEL_DEFAULTS = {
   openRouterBaseUrl: "https://openrouter.ai/api/v1",
-  crawler: "z-ai/glm-5.3-flash",
-  synthesizer: "z-ai/glm-5.3-flash",
-  reviewer: "deepseek/deepseek-v4.1-flash",
+  crawler: "deepseek/deepseek-v4.1-flash",
+  synthesizer: "deepseek/deepseek-v4.1-flash",
+  reviewer: "z-ai/glm-5.3-flash",
   jevApiUrl: "https://api.typesafe.ai/v1/systemone",
   jevModel: "jev-latest",
 } as const;

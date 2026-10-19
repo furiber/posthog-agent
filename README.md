@@ -16,7 +16,7 @@ Appendices: the **Jev validation round log**, contested items (shipped with expl
 
 ## Design: assume weak models
 
-Every model call is a weak, cheap flash-tier model (default `z-ai/glm-5.3-flash` and `deepseek/deepseek-v4.1-flash` on OpenRouter). The reliability comes from the loop and the Jev adjudication, not model intelligence:
+Every model call is a weak, cheap flash-tier model (default `deepseek/deepseek-v4.1-flash` for the crawler and synthesizer, `z-ai/glm-5.3-flash` as the adversarial reviewer). The reliability comes from the loop and the Jev adjudication, not model intelligence:
 
 - four roles, two model call sites — the Agents SDK `streamText` tool-stepping loop (crawler) and small one-job JSON chat calls (synthesizer, adversarial reviewer); the Jev adjudicator is a separate grader API call.
 - deterministic tools with strict schemas; tables are assembled from evidence server-side, never enumerated by the model.

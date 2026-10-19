@@ -100,7 +100,7 @@
       <div class="roles">
         <div class="role core">
           <h3>① Crawler — tool-stepping loop</h3>
-          <div class="model">Agents SDK <code>streamText</code> + tools → z-ai/glm-5.3-flash via OpenRouter (reasoning pinned low)</div>
+          <div class="model">Agents SDK <code>streamText</code> + tools → deepseek/deepseek-v4.1-flash via OpenRouter (reasoning pinned low)</div>
           <ul>
             <li>Tools: <span class="tag">sitemap_discover(url, pageBudget)</span><span class="tag">load_page(url)</span><span class="tag">inspect_dom()</span><span class="tag">interact(selector|preset)</span><span class="tag">record_evidence(...)</span><span class="tag">finish_crawl(reason)</span></li>
             <li>load_page injects request interception: beacons on the wire (PostHog /e/, /i/v0/e/, /batch, /decide · GA4 collect?v=2 en= · GTM gtm.js · gtag.js)</li>
@@ -111,7 +111,7 @@
         </div>
         <div class="role">
           <h3>② Synthesizer</h3>
-          <div class="model">z-ai/glm-5.3-flash via OpenRouter (one small JSON call)</div>
+          <div class="model">deepseek/deepseek-v4.1-flash via OpenRouter (one small JSON call)</div>
           <ul>
             <li>Events/tags/gaps tables assembled deterministically from evidence</li>
             <li>Naming convention derived from the wire (default: object_action snake_case; GA4 terminology-locked)</li>
@@ -120,7 +120,7 @@
         </div>
         <div class="role">
           <h3>③ Adversarial reviewer</h3>
-          <div class="model">deepseek/deepseek-v4.1-flash via OpenRouter — fresh context</div>
+          <div class="model">z-ai/glm-5.3-flash via OpenRouter — fresh context</div>
           <ul>
             <li>Critique-only prompt; verifies every claim against cited evidence</li>
             <li>Hunts: hallucinated events · missed events · misclassified dest/interaction · convention violations · wrong recommendations</li>
@@ -167,8 +167,8 @@
       <div class="card">
         <h2><span class="dot" style="background:var(--violet)"></span>OpenRouter — OpenAI-compatible endpoint <span class="pill v">2 model call sites</span></h2>
         <dl class="kv">
-          <dt>Crawler tool loop</dt><dd>Agents SDK <code>streamText</code> + tool schemas → <code>z-ai/glm-5.3-flash</code> ($0.048/$0.20 per M)</dd>
-          <dt>One-shot JSON calls</dt><dd>synthesizer + reviewer → glm-5.3-flash / <code>deepseek/deepseek-v4.1-flash</code> ($0.063/$0.12 per M)</dd>
+          <dt>Crawler tool loop</dt><dd>Agents SDK <code>streamText</code> + tool schemas → <code>deepseek/deepseek-v4.1-flash</code> ($0.063/$0.12 per M)</dd>
+          <dt>One-shot JSON calls</dt><dd>synthesizer → deepseek-v4.1-flash / reviewer → <code>z-ai/glm-5.3-flash</code> ($0.048/$0.20 per M)</dd>
           <dt>Transport</dt><dd><code>POST {OPENROUTER_BASE_URL}/chat/completions</code>, response_format json_object, usage included</dd>
           <dt>Swap to AI Gateway</dt><dd>point OPENROUTER_BASE_URL at your gateway's OpenAI-compatible URL</dd>
         </dl>

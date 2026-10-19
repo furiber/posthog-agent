@@ -53,9 +53,9 @@ export default defineConfig({
       // point OPENROUTER_BASE_URL at an AI Gateway URL to route through it).
       OPENROUTER_API_KEY: bindings.secret(),
       OPENROUTER_BASE_URL: bindings.text("https://openrouter.ai/api/v1"),
-      CRAWLER_MODEL: bindings.text("z-ai/glm-5.3-flash"),
-      SYNTHESIZER_MODEL: bindings.text("z-ai/glm-5.3-flash"),
-      REVIEWER_MODEL: bindings.text("deepseek/deepseek-v4.1-flash"),
+      CRAWLER_MODEL: bindings.text("deepseek/deepseek-v4.1-flash"),
+      SYNTHESIZER_MODEL: bindings.text("deepseek/deepseek-v4.1-flash"),
+      REVIEWER_MODEL: bindings.text("z-ai/glm-5.3-flash"),
       // Jev grader (TypeSafe systemone API, choice grader).
       TYPESAFE_API_KEY: bindings.secret(),
       JEV_API_URL: bindings.text("https://api.typesafe.ai/v1/systemone"),
