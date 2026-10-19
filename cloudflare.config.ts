@@ -61,7 +61,7 @@ export default defineConfig({
       JEV_API_URL: bindings.text("https://api.typesafe.ai/v1/systemone"),
       JEV_MODEL: bindings.text("jev-latest"),
       // Langfuse v4 tracing (OTLP ingest; tracing only ships when the keys are set).
-      LANGFUSE_BASE_URL: bindings.text("https://us.cloud.langfuse.com"),
+      // LANGFUSE_BASE_URL rides in .env / secrets (defaults to Langfuse Cloud US).
       LANGFUSE_PUBLIC_KEY: langfuseKeys ? bindings.secret() : undefined,
       LANGFUSE_SECRET_KEY: langfuseKeys ? bindings.secret() : undefined,
       // Run budgets: page budget, per-page tool steps, retries, wall clock.
