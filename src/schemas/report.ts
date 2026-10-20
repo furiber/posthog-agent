@@ -47,6 +47,14 @@ export const EventRowSchema = z.object({
 });
 export type EventRow = z.infer<typeof EventRowSchema>;
 
+/** A custom event pushed to the dataLayer: seen in the page, not confirmed on the wire. */
+export const DataLayerEventRowSchema = z.object({
+  eventName: z.string(),
+  observedOn: z.array(z.string()).min(1),
+  evidenceIds: z.array(z.string().regex(/^E\d{6}$/)).min(1),
+});
+export type DataLayerEventRow = z.infer<typeof DataLayerEventRowSchema>;
+
 export const ConventionStyles = [
   "object_action_snake",
   "snake",
@@ -161,6 +169,7 @@ export const ReportSchema = z.object({
   tagInventory: z.array(TagInventoryItemSchema),
   // Section 2
   events: z.array(EventRowSchema),
+  dataLayerEvents: z.array(DataLayerEventRowSchema).optional(),
   // Section 3
   convention: ConventionSchema,
   // Section 4

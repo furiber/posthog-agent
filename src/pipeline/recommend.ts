@@ -76,13 +76,20 @@ export function addAdmissible(interaction: InteractionKind, evidence: Evidence[]
 }
 
 /** Evidence payload for one scripted interaction attempt, stored even when no beacon fired. */
-export function interactionProbePayload(preset: string, detail: string, beaconsFired: number, stepId: string): Record<string, unknown> {
+export function interactionProbePayload(
+  preset: string,
+  detail: string,
+  counts: { requests: number; beacons: number },
+  stepId: string,
+): Record<string, unknown> {
   return {
     probe: true,
     interaction: preset,
     detail,
     found: !/^(no |unknown preset|interaction error)/i.test(detail),
-    beaconsFired,
+    // Tag script loads are analytics requests but not beacons; keeping them apart stops "fired 3 beacons" overstating (F22).
+    analyticsRequests: counts.requests,
+    beaconsFired: counts.beacons,
     stepId,
     note: "interaction attempt",
   };

@@ -57,6 +57,15 @@ export function renderMarkdown(report: Report): string {
   }
   L.push("");
 
+  if (report.dataLayerEvents && report.dataLayerEvents.length > 0) {
+    L.push("**Events pushed to the dataLayer** (seen in the page, not confirmed on the wire):");
+    L.push("");
+    for (const d of report.dataLayerEvents) {
+      L.push(`- \`${esc(d.eventName)}\` — ${d.observedOn.slice(0, 2).map((u) => esc(shortUrl(u))).join(", ")} (${d.evidenceIds.slice(0, 3).join(", ")})`);
+    }
+    L.push("");
+  }
+
   L.push(`## 3. Naming conventions`);
   L.push("");
   const c = report.convention;

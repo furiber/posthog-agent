@@ -3,6 +3,7 @@ import { chatJsonParsed } from "../models";
 import type { Evidence } from "../schemas/evidence";
 import {
   eventRef,
+  type DataLayerEventRow,
   type EventRow,
   type GapItem,
   type Report,
@@ -34,7 +35,7 @@ Rules:
 - add rows use a "gaps:<i>" basis and an interaction from allowedAddInteractions. keep, rename and deprecate rows use an "events:..." basis whose event is currentName. retire may use either.
 - proposedName MUST follow the stated naming convention exactly.
 - Never rename reserved platform events (GA4 auto events like page_view; PostHog $-prefixed events). For those use keep, deprecate, or retire only.
-- keep: currentName === proposedName, and currentName exists in the events table.
+- keep: currentName === proposedName, and currentName exists in the events table. Do not emit keep rows for reserved platform events; they decide nothing.
 - rename: currentName exists in the events table and proposedName is different and follows the convention.
 - add: at most 3 new events that fill the basis gap.
 - rationale: one short sentence that restates the basis. Do not name URLs, files or counts.
@@ -80,16 +81,21 @@ export function buildEventRows(store: RunStore): EventRow[] {
   const evidence = store
     .listEvidence()
     .filter((e) => e.kind === "beacon" && typeof e.payload.eventName === "string");
-  const groups = new Map<string, { eventName: string; interaction: string; destinations: Set<string>; pages: Set<string>; props: Set<string>; ids: string[] }>();
+  const groups = new Map<string, { eventName: string; interaction: string; destinations: Set<string>; pages: Set<string>; props: Set<string>; ids: string[]; after: Set<string> }>();
+  // Events with any load-phase evidence: only for these may a later copy fired during a click be folded back into "load".
+  const seenOnLoad = new Set(evidence.filter((e) => store.interactionFor(e) === "load").map((e) => String(e.payload.eventName)));
   for (const e of evidence) {
     const eventName = String(e.payload.eventName);
-    const interaction = store.interactionFor(e);
+    const raw = store.interactionFor(e);
+    // Page-level auto-events fire on navigation or scroll that our own click or scroll causes; they are not interaction events (F16/F26).
+    const interaction = raw !== "load" && PAGE_LEVEL_AUTO_EVENTS.has(eventName) && seenOnLoad.has(eventName) ? "load" : raw;
     const key = `${eventName}::${interaction}`;
     let g = groups.get(key);
     if (!g) {
-      g = { eventName, interaction, destinations: new Set<string>(), pages: new Set<string>(), props: new Set<string>(), ids: [] };
+      g = { eventName, interaction, destinations: new Set<string>(), pages: new Set<string>(), props: new Set<string>(), ids: [], after: new Set<string>() };
       groups.set(key, g);
     }
+    if (interaction !== raw) g.after.add(raw);
     if (e.dest) g.destinations.add(e.dest);
     g.pages.add(e.pageUrl);
     g.ids.push(e.id);
@@ -107,8 +113,52 @@ export function buildEventRows(store: RunStore): EventRow[] {
       observedOn: [...g.pages].slice(0, 8),
       properties: [...g.props].slice(0, 10),
       evidenceIds: g.ids.slice(0, 10),
-      notes: isReservedEventName(g.eventName) ? "platform auto-event (reserved name)" : undefined,
+      notes:
+        [
+          isReservedEventName(g.eventName) ? "platform auto-event (reserved name)" : "",
+          g.after.size > 0 ? `also fired after ${[...g.after].join(", ")} step` : "",
+          g.interaction !== "load" && PAGE_LEVEL_AUTO_EVENTS.has(g.eventName) ? "seen only during scripted click steps; not necessarily caused by the click" : "",
+        ]
+          .filter(Boolean)
+          .join("; ") || undefined,
     }));
+}
+
+const PAGE_LEVEL_AUTO_EVENTS = new Set(["page_view", "$pageview", "first_visit", "session_start", "scroll", "user_engagement", "$pageleave", "$web_vitals"]);
+
+/** Custom events pushed to window.dataLayer or by inline dataLayer.push calls: seen in the page, not confirmed on the wire. */
+export function buildDataLayerEvents(store: RunStore): DataLayerEventRow[] {
+  const found = new Map<string, { pages: Set<string>; ids: string[] }>();
+  const note = (name: string, e: Evidence) => {
+    if (/^gtm\./.test(name)) return;
+    const g = found.get(name) ?? { pages: new Set<string>(), ids: [] };
+    g.pages.add(e.pageUrl);
+    if (!g.ids.includes(e.id)) g.ids.push(e.id);
+    found.set(name, g);
+  };
+  for (const e of store.listEvidence()) {
+    if (e.source !== "capture") continue;
+    if (Array.isArray(e.payload.dataLayer)) {
+      for (const entry of e.payload.dataLayer) {
+        try {
+          const ev = (JSON.parse(String(entry)) as { event?: unknown }).event;
+          if (typeof ev === "string") note(ev, e);
+        } catch {
+          /* truncated entry: skip */
+        }
+      }
+    }
+    if (Array.isArray(e.payload.initCalls)) {
+      for (const call of e.payload.initCalls) {
+        if (!/dataLayer\.push/.test(String(call))) continue;
+        const name = String(call).match(/['"]?\bevent['"]?\s*:\s*['"]([\w.$-]+)['"]/)?.[1];
+        if (name) note(name, e);
+      }
+    }
+  }
+  return [...found.entries()]
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([eventName, g]) => ({ eventName, observedOn: [...g.pages].slice(0, 8), evidenceIds: g.ids.slice(0, 6) }));
 }
 
 /** Deterministic tag inventory from snippet evidence. */
@@ -209,7 +259,7 @@ export function buildGaps(store: RunStore, eventRows: EventRow[]): GapItem[] {
 
   // F10: a PostHog / GA tag is present but sent nothing. Say why when the browser told us.
   const diagEvidence = evidence.filter((e) => e.kind === "dom" && ("cspViolations" in e.payload || "failedAnalyticsRequests" in e.payload));
-  const csp = diagEvidence.flatMap((e) => records(e.payload.cspViolations).map((v) => ({ id: e.id, uri: String(v.blockedUri), directive: String(v.directive) })));
+  const csp = diagEvidence.flatMap((e) => records(e.payload.cspViolations).map((v) => ({ id: e.id, page: typeof v.page === "string" && v.page ? v.page : e.pageUrl, uri: String(v.blockedUri), directive: String(v.directive) })));
   const failed = diagEvidence.flatMap((e) => records(e.payload.failedAnalyticsRequests).map((v) => ({ id: e.id, url: String(v.url), failure: String(v.failure) })));
   const silentGroups = new Set<string>();
   // Analytics-looking traffic the classifier did not recognise (so a "silent" verdict can be checked by the reader).
@@ -219,18 +269,49 @@ export function buildGaps(store: RunStore, eventRows: EventRow[]): GapItem[] {
     unrecognised.length > 0
       ? ` ${unrecognised.length} analytics-looking request${unrecognised.length === 1 ? "" : "s"} to ${[...new Set(unrecognised.map((u) => safeHost(u) ?? u))].slice(0, 3).join(", ")} ${unrecognised.length === 1 ? "was" : "were"} not recognised by the crawler and may be the missing events.`
       : "";
-  for (const tag of computeTagStates(buildTagInventory(store), evidence)) {
+  const stated = computeTagStates(buildTagInventory(store), evidence);
+  // F15: where is the tag blocked, and where does it appear? A CSP can differ per page, so scope the claim.
+  const scopeOf = (tag: TagInventoryItem) => {
+    const tagEvidence = evidence.filter((e) => e.kind === "snippet" && tag.evidenceIds.includes(e.id));
+    const hosts = new Set(tagEvidence.flatMap((e) => hostsOf(e)));
+    const relevant = (host: string | null) => Boolean(host) && (hosts.has(host!) || (tag.destination === "posthog" ? host!.includes("posthog") : /googletagmanager|google-analytics/.test(host!)));
+    const hits = csp.filter((v) => relevant(safeHost(v.uri)));
+    return { relevant, hits, tagPages: new Set(tagEvidence.map((e) => e.pageUrl)), blockedPages: new Set(hits.map((h) => h.page)) };
+  };
+  const labelOf = (tag: TagInventoryItem) => (tag.destination === "posthog" ? "PostHog" : "Google Analytics");
+  const partialKeys = new Set<string>();
+  const partialGap = (tag: TagInventoryItem): GapItem | null => {
+    const { hits, tagPages, blockedPages } = scopeOf(tag);
+    const key = `${tag.destination}|${hits[0]?.uri}`;
+    if (hits.length === 0 || partialKeys.has(key)) return null;
+    partialKeys.add(key);
+    const hit = hits[0]!;
+    const onTagPages = [...blockedPages].filter((p) => tagPages.has(p));
+    const where =
+      onTagPages.length > 0
+        ? `on ${onTagPages.length} of ${tagPages.size} pages where it appears (${onTagPages.slice(0, 4).join(", ")})`
+        : `on a page reached after navigation (${[...blockedPages].slice(0, 3).join(", ")}), not on the ${tagPages.size} page${tagPages.size === 1 ? "" : "s"} where it was captured`;
+    return {
+      title: "Analytics tag blocked by the site's Content-Security-Policy on some pages",
+      severity: "medium",
+      detail: `The ${labelOf(tag)} tag is blocked by the Content-Security-Policy ${where}: ${hit.uri} (${hit.directive}). Elsewhere it was not blocked, so the policy differs between pages.`,
+      evidenceIds: [...tag.evidenceIds.slice(0, 3), hit.id],
+      remedy: `Make the Content-Security-Policy consistent: allow ${safeHost(hit.uri) ?? hit.uri} in ${hit.directive} on the pages that block it.`,
+    };
+  };
+  for (const tag of stated) {
     const sendsTo = BEACON_DESTS[tag.destination];
     if (!sendsTo || silentGroups.has(sendsTo.join())) continue;
     if (beacons.some((b) => b.dest && sendsTo.includes(b.dest))) continue;
     silentGroups.add(sendsTo.join());
-    const tagEvidence = evidence.filter((e) => e.kind === "snippet" && tag.evidenceIds.includes(e.id));
-    const hosts = new Set(tagEvidence.flatMap((e) => hostsOf(e)));
-    const label = tag.destination === "posthog" ? "PostHog" : "Google Analytics";
-    const relevant = (host: string | null) => Boolean(host) && (hosts.has(host!) || (tag.destination === "posthog" ? host!.includes("posthog") : /googletagmanager|google-analytics/.test(host!)));
-    const blocked = csp.find((v) => relevant(safeHost(v.uri)));
+    const label = labelOf(tag);
+    const { relevant, hits, tagPages, blockedPages } = scopeOf(tag);
+    const blocked = hits[0];
     const failing = failed.find((v) => relevant(safeHost(v.url)));
-    if (blocked) {
+    if (blocked && blockedPages.size < tagPages.size) {
+      const partial = partialGap(tag);
+      if (partial) gaps.push(partial);
+    } else if (blocked) {
       gaps.push({
         title: "Analytics tag present but blocked by the site's Content-Security-Policy",
         severity: "high",
@@ -298,6 +379,15 @@ export function buildGaps(store: RunStore, eventRows: EventRow[]): GapItem[] {
       evidenceIds: group.slice(0, 4).map((b) => b.id),
       remedy: `Remove the extra firing of ${name} on ${group[0]!.pageUrl}.`,
     });
+  }
+
+  // A tag that does fire elsewhere can still be blocked on some pages.
+  for (const tag of stated) {
+    if (!BEACON_DESTS[tag.destination]) continue;
+    const { tagPages, blockedPages } = scopeOf(tag);
+    if (blockedPages.size === 0 || blockedPages.size >= tagPages.size) continue; // fully blocked tags are handled above
+    const partial = partialGap(tag);
+    if (partial) gaps.push(partial);
   }
 
   // The consent claim "beacons fire unconditionally" needs at least one beacon.
@@ -434,6 +524,7 @@ export async function synthesizeDraft(input: SynthesizeInput): Promise<SynthResu
   const eventRows = buildEventRows(store);
   const tagInventory = computeTagStates(buildTagInventory(store), store.listEvidence());
   const gaps = buildGaps(store, eventRows);
+  const dataLayerEvents = buildDataLayerEvents(store);
   const convention = deriveConvention(
     eventRows.map((r) => r.eventName),
     eventRows.flatMap((r) => r.properties),
@@ -540,6 +631,7 @@ export async function synthesizeDraft(input: SynthesizeInput): Promise<SynthResu
     models: input.models,
     tagInventory,
     events: eventRows,
+    ...(dataLayerEvents.length > 0 ? { dataLayerEvents } : {}),
     convention: {
       style: convention.style,
       eventPattern: convention.eventPattern,
@@ -606,6 +698,8 @@ export function validatePlan(
       notes = `${notes ? notes + "; " : ""}reserved platform event; rename not allowed`;
     }
 
+    // A keep row for a reserved platform event decides nothing: the rule is already "leave it alone".
+    if (action === "keep" && currentName && isReservedEventName(currentName)) continue;
     // keep rows must be identical and exist.
     if (action === "keep") {
       if (!currentName || !knownEvents.has(currentName)) continue;

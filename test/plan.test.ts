@@ -95,12 +95,14 @@ describe("validatePlan: basis and admissibility (F11, 2026-10-21)", () => {
   });
 
   it("an event basis shared by a load row and a click row resolves to the row with the same interaction", () => {
-    const clickBeacon = ev({ kind: "beacon", dest: "ga4", interactionStepId: "S-click-4", payload: { eventName: "page_view", props: {} } });
-    const clickRow: EventRow = { ...pageViewRow, interaction: "click", evidenceIds: [clickBeacon.id] };
-    const keepLoad = row({ action: "keep", currentName: "page_view", proposedName: "page_view", interaction: "load", basis: "events:page_view@ga4" });
-    const out = validatePlan([keepLoad], [clickRow, pageViewRow], convention, storeOf([...evidence, clickBeacon]), [pageviewOnlyGap]);
+    const loadBeacon = ev({ kind: "beacon", dest: "ga4", payload: { eventName: "cta_view", props: {} } });
+    const clickBeacon = ev({ kind: "beacon", dest: "ga4", interactionStepId: "S-click-4", payload: { eventName: "cta_view", props: {} } });
+    const loadRow: EventRow = { ...pageViewRow, eventName: "cta_view", interaction: "load", evidenceIds: [loadBeacon.id] };
+    const clickRow: EventRow = { ...loadRow, interaction: "click", evidenceIds: [clickBeacon.id] };
+    const keepLoad = row({ action: "keep", currentName: "cta_view", proposedName: "cta_view", interaction: "load", basis: "events:cta_view@ga4" });
+    const out = validatePlan([keepLoad], [clickRow, loadRow], convention, storeOf([...evidence, loadBeacon, clickBeacon]), [pageviewOnlyGap]);
     expect(out).toHaveLength(1);
-    expect(out[0].evidenceIds).toEqual([pageViewBeacon.id]);
+    expect(out[0].evidenceIds).toEqual([loadBeacon.id]);
   });
 
   it("an `add` row must use a gap basis; keep/rename must use an event basis", () => {
@@ -108,10 +110,17 @@ describe("validatePlan: basis and admissibility (F11, 2026-10-21)", () => {
     expect(validatePlan([addOnEvent], [pageViewRow], convention, storeOf([...evidence, ctaProbe]), [pageviewOnlyGap])).toEqual([]);
     const keepOnGap = row({ action: "keep", currentName: "page_view", proposedName: "page_view", interaction: "load", basis: "gaps:0" });
     expect(validatePlan([keepOnGap], [pageViewRow], convention, storeOf(evidence), [pageviewOnlyGap])).toEqual([]);
-    const keepOk = row({ action: "keep", currentName: "page_view", proposedName: "page_view", interaction: "load", basis: "events:page_view@ga4" });
-    const out = validatePlan([keepOk], [pageViewRow], convention, storeOf(evidence), [pageviewOnlyGap]);
+    const customBeacon = ev({ kind: "beacon", dest: "ga4", payload: { eventName: "cta_click", props: {} } });
+    const customRow: EventRow = { ...pageViewRow, eventName: "cta_click", evidenceIds: [customBeacon.id] };
+    const keepOk = row({ action: "keep", currentName: "cta_click", proposedName: "cta_click", interaction: "load", basis: "events:cta_click@ga4" });
+    const out = validatePlan([keepOk], [customRow], convention, storeOf([...evidence, customBeacon]), [pageviewOnlyGap]);
     expect(out).toHaveLength(1);
-    expect(out[0].evidenceIds).toEqual([pageViewBeacon.id]);
+    expect(out[0].evidenceIds).toEqual([customBeacon.id]);
+  });
+
+  it("drops `keep` rows for reserved platform events: nothing to decide, only something for a reviewer to argue about (aa.co.nz, 2026-10-21)", () => {
+    const keepReserved = row({ action: "keep", currentName: "page_view", proposedName: "page_view", interaction: "load", basis: "events:page_view@ga4" });
+    expect(validatePlan([keepReserved], [pageViewRow], convention, storeOf(evidence), [pageviewOnlyGap])).toEqual([]);
   });
 
   it("replaces a rationale that names a URL absent from evidence", () => {

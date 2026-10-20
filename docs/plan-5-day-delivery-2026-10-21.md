@@ -125,6 +125,24 @@ Code cause: `src/browser/capture.ts` matches GA4 only when the host ends in `goo
 
 **Live acceptance:** nobodycame.app, coffeerouletteapp.com, aa.co.nz, posthog.com: zero duplicate rows, zero reviewer critiques about tables, validation rounds 0 or 1 on every run.
 
+### Day 2 results (2026-10-21)
+
+- **Built tests-first:** 17 failing tests written before code (event-row merging, auto-event attribution, per-page CSP scope, dataLayer events, loop scoping, probe counters, Langfuse default). 168/168 tests pass (was 151); typecheck clean.
+- **Done as specced:**
+  - **A1 per-page CSP (F15):** the finding says "blocked on N of M pages" (or "on a page reached after navigation") and the site-wide HIGH finding only appears when every page with the tag is blocked and nothing fired.
+  - **A2 event rows (F16/F26):** one row per event and interaction; a page-level auto-event (`page_view`, `scroll`, `user_engagement`, ...) that also fired on load is folded into `load` with a note; one seen only during our scripted click stays `click` with a note ("seen only during scripted click steps; not necessarily caused by the click"). The gate merges any duplicate rows.
+  - **dataLayer events (F23):** custom events pushed to the dataLayer (aa.co.nz `quality_traffic`) are listed under the events table as "not confirmed on the wire".
+  - **Probe counters (F22):** probes record `analyticsRequests` and `beaconsFired` separately.
+  - **B loop scoped (F1/F25):** the reviewer and Jev only see tracking-plan rows and the evidence behind them, and are skipped when the plan is empty; critiques of tables are dropped.
+  - **Langfuse (F24):** root cause was a code default of the EU cloud for US keys; fixed to the US cloud. Live trace upload now returns 200 on every run.
+- **Live, four sites (pageBudget 2):** all four runs finished non-partial, including posthog.com (before: Jev HTTP 400, partial). Validation skipped on nobodycame.app, posthog.com and (after the `keep`-row rule) aa.co.nz; coffeerouletteapp.com ran 3 rounds and converged to zero critiques in round 3 for the first time. nobodycame.app took 47 s (was about 100 s). aa.co.nz events table: `page_view` (load), `scroll` and `user_engagement` (click, with notes), plus the dataLayer event; no duplicate rows.
+- **Found while verifying, fixed:**
+  - Dropping the loop's table edits was not enough: the reviewer then argued with my first attribution rule ("scroll as load" while every beacon was in a click step). Rule refined as above.
+  - `keep` rows for reserved platform events decide nothing and only gave the reviewer something to argue about; the plan step no longer emits them, which empties the plan (and skips validation) on most sites.
+  - A CSP finding on aa.co.nz blamed `/membership` for a violation that most likely came from a page the scripted click navigated to; violations are now attributed to the document they happened on. The finding did not recur in the last run, so this fix is covered by a unit test but not reproduced live.
+- **Deliberately not done:** labelling inline analytics scripts with their detected event names (item 4 in the Day 2 list); the dataLayer events list covers the useful part. Moved to Day 4 if wanted.
+- **Not verified:** the `[Report Only]` CSP message form (report-only policies log the same "violates the following Content Security Policy directive" text but block nothing) is not distinguished yet; see F32.
+
 ## 5. Day 3: The Claude Agent SDK agent (challenge entry, post Fri 23 Oct)
 
 **Goal:** the challenge deliverable, running on the Day 1 and Day 2 core.
@@ -222,6 +240,16 @@ Status: Day 1 approved. Build started: the parity script and the setup check com
 | F3 | (update) Consent Mode signals parsed; finding reworded | 2026-10-21 | Fixed (unit tests, live aa.co.nz and coffeerouletteapp.com) | 2026-10-21 |
 | F25 | Jev validation fails with HTTP 400 `max_tokens_exceeded` on a large evidence set (posthog.com run), shipping a partial report | 2026-10-21 | Open (Day 2: loop scoped to plan rows removes most of the input) | n/a |
 | F26 | Duplicate/split event rows seen again: `page_view` and `scroll` appear as both `load` and `click` rows after a click-triggered navigation (aa.co.nz) | 2026-10-21 | Open (Day 2, same as F16) | n/a |
+| F15 | (update) CSP scoped per page, attributed to the document it came from | 2026-10-21 | Fixed (unit tests; the aa.co.nz symptom not reproduced after the fix) | 2026-10-21 |
+| F16 | (update) one row per event and interaction; gate merges duplicates; the loop no longer edits tables | 2026-10-21 | Fixed (unit tests + live on four sites) | 2026-10-21 |
+| F22 | (update) probes count requests and beacons separately | 2026-10-21 | Fixed | 2026-10-21 |
+| F23 | (update) dataLayer custom events listed | 2026-10-21 | Fixed (unit tests + live aa.co.nz) | 2026-10-21 |
+| F24 | (update) Langfuse default region fixed (US) | 2026-10-21 | Fixed (live: upload 200 on every run) | 2026-10-21 |
+| F25 | (update) Jev token overflow on big sites | 2026-10-21 | Fixed (loop sees plan rows only; posthog.com non-partial) | 2026-10-21 |
+| F1 | (update) validation loop | 2026-10-21 | Largely resolved: skipped when the plan is empty, scoped to plan rows otherwise; one site converged to zero critiques | 2026-10-21 |
+| F30 | CSP error from a page reached after a scripted click was attributed to the crawl target | 2026-10-21 | Fixed (unit test; not reproduced live after the fix) | 2026-10-21 |
+| F31 | `keep` plan rows for reserved platform events invite review but decide nothing | 2026-10-21 | Fixed: dropped | 2026-10-21 |
+| F32 | `[Report Only]` CSP console messages look like blocks but block nothing | 2026-10-21 | Open | n/a |
 | F27 | `check_setup.py` API-key check red: key not yet provided | 2026-10-21 | Superseded: OpenRouter check built and green; upstream check needs an `sk-ant-` key | 2026-10-21 |
 | F28 | SDK child inherits the host app's Claude login and sends it instead of the configured gateway key | 2026-10-21 | Fixed (`sdkEnv`, tested) | 2026-10-21 |
 | F29 | `maxBudgetUsd` unreliable through OpenRouter (inflated usage, unknown-model pricing) | 2026-10-21 | Open: Day 3 agent uses `maxTurns`, wall-clock timeout and a spend limit on the OpenRouter key | n/a |

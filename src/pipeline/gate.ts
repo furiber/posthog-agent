@@ -27,6 +27,22 @@ export function finalGate(report: Report, store: RunStore): GateResult {
   const known = new Set(store.listEvidence().filter((e) => e.source === "capture").map((e) => e.id));
   const hasEvidence = (ids: string[]) => ids.some((id) => known.has(id));
 
+  // 0. One event row per event, interaction and destination set: merge duplicates (the loop used to add them, F16).
+  const merged = new Map<string, (typeof report.events)[number]>();
+  for (const row of report.events) {
+    const key = `${row.eventName}::${row.interaction}::${[...row.destinations].sort().join("+")}`;
+    const existing = merged.get(key);
+    if (!existing) {
+      merged.set(key, { ...row, evidenceIds: [...row.evidenceIds], observedOn: [...row.observedOn], properties: [...row.properties] });
+      continue;
+    }
+    existing.evidenceIds = [...new Set([...existing.evidenceIds, ...row.evidenceIds])].slice(0, 10);
+    existing.observedOn = [...new Set([...existing.observedOn, ...row.observedOn])].slice(0, 8);
+    existing.properties = [...new Set([...existing.properties, ...row.properties])].slice(0, 10);
+    notes.push(`merged duplicate event row ${row.eventName} (${row.interaction})`);
+  }
+  report.events = [...merged.values()];
+
   // 1. Every claim row carries >=1 existing evidence ID.
   const beforeEvents = report.events.length;
   report.events = report.events.filter((r) => {

@@ -42,7 +42,8 @@ export const langfuseEnabled = (env: LangfuseEnv): boolean =>
   !!env.LANGFUSE_PUBLIC_KEY && !!env.LANGFUSE_SECRET_KEY;
 
 export function langfuseBaseUrl(env: LangfuseEnv): string {
-  return (env.LANGFUSE_BASE_URL || "https://cloud.langfuse.com").replace(/\/$/, "");
+  // Default to the US cloud (as the config comment and README state); the EU default returned 401 for US keys (F24, 2026-10-21).
+  return (env.LANGFUSE_BASE_URL || "https://us.cloud.langfuse.com").replace(/\/$/, "");
 }
 
 /** OTEL trace id (32 hex chars) for a run id; a UUID maps to itself without dashes. */

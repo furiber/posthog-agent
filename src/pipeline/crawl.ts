@@ -475,7 +475,12 @@ function buildTools(shared: CrawlShared) {
           source: "capture",
           captureId: `I:${url}:${stepId}`,
           interactionStepId: stepId,
-          payload: interactionProbePayload(chosen, out.detail, out.fired.length, stepId),
+          payload: interactionProbePayload(
+            chosen,
+            out.detail,
+            { requests: out.fired.length, beacons: out.fired.filter((c) => c.classified.kind === "beacon").length },
+            stepId,
+          ),
         });
         if (probe) ids.push(probe.id);
         state.evidenceIds.push(...ids);

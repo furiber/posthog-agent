@@ -116,7 +116,7 @@ describe("addAdmissible: an `add` row needs evidence that the interaction exists
 
 describe("interactionProbePayload (F13): attempts that fire nothing are still evidence", () => {
   it("records a found click that fired no beacons", () => {
-    expect(interactionProbePayload("cta_click", "clicked a visible CTA", 0, "S-click-2")).toMatchObject({
+    expect(interactionProbePayload("cta_click", "clicked a visible CTA", { requests: 0, beacons: 0 }, "S-click-2")).toMatchObject({
       probe: true,
       interaction: "cta_click",
       found: true,
@@ -125,10 +125,15 @@ describe("interactionProbePayload (F13): attempts that fire nothing are still ev
     });
   });
 
+  it("counts script loads as analytics requests, not beacons (aa.co.nz: 'fired 3 beacons' was really 3 requests, F22)", () => {
+    const p = interactionProbePayload("cta_click", "clicked a visible CTA", { requests: 3, beacons: 1 }, "S-click-2");
+    expect(p).toMatchObject({ analyticsRequests: 3, beaconsFired: 1 });
+  });
+
   it("marks 'no ...' results as not found", () => {
-    expect(interactionProbePayload("cta_click", "no visible CTA found (outside nav/header/footer)", 0, "S-click-1").found).toBe(false);
-    expect(interactionProbePayload("consent_toggle", "no consent banner found", 0, "S-consent-1").found).toBe(false);
-    expect(interactionProbePayload("form_submit", "no form found on the page", 0, "S-form-1").found).toBe(false);
-    expect(interactionProbePayload("form_submit", "interaction error: timeout", 0, "S-form-2").found).toBe(false);
+    expect(interactionProbePayload("cta_click", "no visible CTA found (outside nav/header/footer)", { requests: 0, beacons: 0 }, "S-click-1").found).toBe(false);
+    expect(interactionProbePayload("consent_toggle", "no consent banner found", { requests: 0, beacons: 0 }, "S-consent-1").found).toBe(false);
+    expect(interactionProbePayload("form_submit", "no form found on the page", { requests: 0, beacons: 0 }, "S-form-1").found).toBe(false);
+    expect(interactionProbePayload("form_submit", "interaction error: timeout", { requests: 0, beacons: 0 }, "S-form-2").found).toBe(false);
   });
 });

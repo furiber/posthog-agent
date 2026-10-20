@@ -4,7 +4,7 @@ import type { BrowserWorker } from "@cloudflare/playwright";
 import { BrowserPool } from "./browser/driver";
 import { CaptureCollector } from "./browser/pageTools";
 import { runCrawl, type CrawlShared } from "./pipeline/crawl";
-import { adversarialReview } from "./pipeline/review";
+import { adversarialReview, needsValidation } from "./pipeline/review";
 import { applyCritiques, roundCritiqueRows } from "./pipeline/revise";
 import { finalGate } from "./pipeline/gate";
 import { asEmptyDetectionReport } from "./pipeline/empty";
@@ -262,10 +262,12 @@ async function runPipeline(
     sse("draft_ready", { events: draft.events.length, tags: draft.tagInventory.length, gaps: draft.gaps.length, plan: draft.trackingPlan.length });
 
     // ---------------- Validation loop ----------------
-    sse("phase", { name: "validate", status: "started", maxRounds: cfg.maxValidationRounds });
+    // F1/B: the reviewer and Jev only look at tracking-plan rows; with none, there is nothing a model wrote to adjudicate.
+    const maxRounds = needsValidation(draft) ? cfg.maxValidationRounds : 0;
+    sse("phase", maxRounds === 0 ? { name: "validate", status: "skipped", reason: "no tracking-plan rows to review" } : { name: "validate", status: "started", maxRounds });
     const rounds: RoundLog[] = [];
     let validationError: string | null = null;
-    for (let round = 1; round <= cfg.maxValidationRounds; round++) {
+    for (let round = 1; round <= maxRounds; round++) {
       if (Date.now() > deadline) {
         validationError = "wall-clock budget exhausted during validation";
         draft.partial = true;

@@ -48,7 +48,7 @@ export class CaptureCollector {
   /** First-party hosts learned to serve PostHog (asset path seen, or posthog.init api_host). */
   readonly posthogHosts = new Set<string>();
   /** Console CSP violations and failed analytics requests, per page URL (F10). */
-  private readonly diag = new Map<string, { csp: { blockedUri: string; directive: string }[]; failed: { url: string; failure: string }[] }>();
+  private readonly diag = new Map<string, { csp: { blockedUri: string; directive: string; page?: string }[]; failed: { url: string; failure: string }[] }>();
 
   private diagFor(pageUrl: string) {
     let d = this.diag.get(pageUrl);
@@ -60,7 +60,7 @@ export class CaptureCollector {
   }
 
   /** Deduplicated diagnostics collected for a page; empty arrays when nothing went wrong. */
-  diagnosticsFor(pageUrl: string): { cspViolations: { blockedUri: string; directive: string }[]; failedAnalyticsRequests: { url: string; failure: string }[] } {
+  diagnosticsFor(pageUrl: string): { cspViolations: { blockedUri: string; directive: string; page?: string }[]; failedAnalyticsRequests: { url: string; failure: string }[] } {
     const d = this.diag.get(pageUrl);
     const uniq = <T,>(items: T[]) => [...new Map(items.map((i) => [JSON.stringify(i), i])).values()].slice(0, 10);
     return { cspViolations: uniq(d?.csp ?? []), failedAnalyticsRequests: uniq(d?.failed ?? []) };
@@ -129,7 +129,8 @@ export class CaptureCollector {
         try {
           if (msg.type() !== "error") return;
           const v = parseCspViolation(msg.text());
-          if (v) this.diagFor(pageUrl).csp.push(v);
+          // Record the document the error came from: a scripted click can navigate to a page with a stricter policy.
+          if (v) this.diagFor(pageUrl).csp.push({ ...v, page: redactUrl(page.url()) });
         } catch {
           /* diagnostics must never break the crawl */
         }
