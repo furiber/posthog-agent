@@ -1,4 +1,6 @@
 node_modules/
+# Upstream TAI Labs challenge repo (public, no license): cloned for local use, never redistributed here.
+challenge/upstream/
 dist/
 .cloudflare/
 .wrangler/

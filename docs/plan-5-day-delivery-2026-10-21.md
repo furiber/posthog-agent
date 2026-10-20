@@ -81,6 +81,12 @@ Code cause: `src/browser/capture.ts` matches GA4 only when the host ends in `goo
 - nobodycame.app: tag state "blocked" with the CSP evidence (unchanged conclusion, now one of five states).
 - coffeerouletteapp.com: no regression.
 
+**Definition of done for Day 1 (set by you, 2026-10-21):** the challenge's own setup check is all green: https://github.com/akshika47/AI-Internship/blob/main/claude-agent-sdk-challenge/day-1/check_setup.py
+- Status 2026-10-21: Python 3.12 ✓ and Claude Agent SDK 0.2.168 ✓ (via `uv`); the **API key check is red** until you put your `sk-ant-` key into `challenge/upstream/claude-agent-sdk-challenge/.env`. I cannot enter it. The CV line is a note (`·`), not a failure.
+- Run it with `npm run challenge:check` (adds `-X utf8`, needed on Windows so ✓ and ✗ print; without it the script crashes with a `UnicodeEncodeError`).
+- The upstream check is Python; our agent stays TypeScript (upstream also ships a `typescript/` folder per day). The check gates the environment, not the language.
+- The detection work below is still Day 1 scope; "done" for the day means both this check is green **and** the live acceptance below passes.
+
 **Risks:** over-matching `/g/collect` on non-Google sites (mitigated by requiring `v=2` and `tid=G-`); regional/ad-product beacons (`ccm/collect`, `ga-audiences`) are Google Ads, not GA4 events, so they go to the inventory, not the events table.
 
 ## 4. Day 2: Accurate tables, lean loop
@@ -178,7 +184,10 @@ Multi-user accounts, billing, scheduled monitoring, PDF export, languages other 
 2. **Deliverable:** both, from one shared detection core: the Agent SDK entry on Day 3, the Cloudflare agent with UI on Day 5.
 3. **Day 5 UI:** report view, evidence drawer and tag-state badges; run history is out of scope for the five days.
 
-Status: the plan is awaiting approval to start Day 1 (no code written).
+4. **Repo visibility (2026-10-21):** `furiber/posthog-agent` should be public. Pre-publication audit done the same day: repo is currently private; no secrets in any commit on any branch (scanned for Anthropic, OpenRouter, Langfuse, AWS, GitHub, Slack and private-key patterns); `.env` was never tracked (only `.env.example`); no account IDs in config; commit author is `furiber@gmail.com` (becomes public). Not yet pushed or flipped: waiting for your go-ahead and a licence choice.
+5. **Upstream challenge repo:** cloned (sparse, `claude-agent-sdk-challenge` only) into `challenge/upstream/` and git-ignored, because the upstream repo is public but has no licence, so committing a copy into our public repo would redistribute code we have no right to. `challenge/README.md` has the re-clone commands.
+
+Status: Day 1 approved. Build started: the parity script and the setup check come first.
 
 ## Findings log (additions on 2026-10-21)
 
