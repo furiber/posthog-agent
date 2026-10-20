@@ -4,8 +4,18 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Changed
+
+- Recommendations are now written by the server from the findings, not by the model, so every recommendation maps to a finding with evidence IDs. Tracking-plan rows must point at a finding or an observed event, and new-event proposals (click, form, consent) now require proof the interaction exists on the site.
+
+### Removed
+
+- The crawler can no longer write its own evidence notes; they sometimes contradicted what the browser actually captured.
+
 ### Added
 
+- A "Duplicate beacon on one page load" finding when the same event fires more than once on a page.
+- Every scripted click, form or consent attempt is recorded as evidence, even when nothing was sent.
 - When a PostHog or Google Analytics tag is found but no events are sent, the report now says so and, if the browser reported it, names the cause: a Content-Security-Policy block (with the blocked URL and directive) or a failing request.
 
 ### Fixed

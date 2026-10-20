@@ -63,6 +63,8 @@ export const GapItemSchema = z.object({
   detail: z.string(),
   evidenceIds: z.array(z.string().regex(/^E\d{6}$/)).min(1),
   contested: z.boolean().optional(),
+  /** Server-written recommendation for this gap (templated, never model prose). */
+  remedy: z.string().optional(),
 });
 export type GapItem = z.infer<typeof GapItemSchema>;
 

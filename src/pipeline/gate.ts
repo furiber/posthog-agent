@@ -23,7 +23,8 @@ const INTERACTION_OBJECT: Record<string, string> = {
 
 export function finalGate(report: Report, store: RunStore): GateResult {
   const notes: string[] = [];
-  const known = new Set(store.listEvidence().map((e) => e.id));
+  // Crawler-authored (source "model") evidence is never support for a claim.
+  const known = new Set(store.listEvidence().filter((e) => e.source === "capture").map((e) => e.id));
   const hasEvidence = (ids: string[]) => ids.some((id) => known.has(id));
 
   // 1. Every claim row carries >=1 existing evidence ID.

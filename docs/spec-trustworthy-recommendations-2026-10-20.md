@@ -145,11 +145,28 @@ The adversarial reviewer and Jev loop stay as they are. Expected effect: far few
 1. **Templated recommendations only (recommended) vs. model prose with the lint.** Weak flash-tier models are the failure source; templates are deterministic. The lint alone would still let plausible falsehoods through.
 2. **Delete `record_evidence` (recommended) vs. keep it but ignore it for support.** Deleting also removes the false notes that mislead the reviewer.
 
+## 10. Build and verification results (2026-10-21)
+
+- Approved with both recommendations (templated recommendations only; delete `record_evidence`). 97/97 tests pass (was 67), typecheck clean. No third-party API was added or changed (internal logic and zod only), so Context7 was not consulted for this change.
+- Built tests-first for the main behaviours (22 failing tests written before code). Three loophole tests (below) were written in the same step as their fixes, after the live run exposed them.
+- Implemented as specced: `record_evidence` removed; every interaction attempt stored as capture evidence (`probe`); new "Duplicate beacon on one page load" gap; each gap carries a server-written `remedy`; recommendations come only from remedies; plan rows need a `basis` and the server assigns evidence; `add` rows need a click/form probe or a consent banner; `lintClaim` replaces rationale text naming URLs or files absent from capture evidence; the gate ignores `source: "model"` evidence.
+- **Live run 1 exposed a loophole:** on coffeerouletteapp.com the model proposed `consent_update` labelled interaction `other`, which then bypassed the probe rule. Fixed: `load` and `other` are never admissible for `add`, and a consent-named `add` row needs a banner whatever its interaction label.
+- **Live run 1 exposed a bug in my basis resolution:** a `keep page_view` row took the evidence of the click-triggered `page_view` row because both share the ref `events:page_view@ga4`. Fixed: the basis resolves to the row with the same interaction.
+- **Live rerun, nobodycame.app (after fixes):** one recommendation, templated from the CSP gap ("Allow t.nobodycame.app in script-src, and in connect-src for the ingestion host."). No `cta_click`, no consent advice, no `ph.js` claim, no tracking plan.
+- **Live rerun, coffeerouletteapp.com (after fixes):** one templated consent recommendation; plan has `keep page_view` (correct evidence) and `add outbound_click` on a click with a CTA probe and the pageview-only gap as basis. No `consent_*` row, no `signup_completed`.
+- **Not fixed, measured (F1):** the validation loop still ran 3 rounds with Jev-Correct critiques every round (nobodycame.app 2/3/1, coffeerouletteapp.com 5/4/6 critiques; before this change 3/3/1 and 3/5/4). The remaining critiques are about deterministic tables the revise step cannot edit (below), so they now point at real defects rather than model inventions.
+- **New defects the reviewer found, now that the model text is out of the way:**
+  - F15: the CSP gap says the library "never starts and no events are sent" site-wide, but on `/about` the script loaded and a CTA click fired 1 beacon; the events table was still empty, so that beacon was either a config request or not classified. The gap overclaims for the whole site from a per-page observation.
+  - F16: the events table can show `page_view` twice with the same interaction and destination (coffeerouletteapp.com run), and can split one load-time event into a second "click" row when a click triggers navigation.
+
 ## Findings log
 
 | ID | Finding | Date found | Status | Date fixed |
 |---|---|---|---|---|
-| F11 | LLM plan writes unsupported advice around correct deterministic gaps | 2026-10-20 | Spec drafted | n/a |
-| F12 | Crawler-authored `record_evidence` notes (some false) are cited as proof | 2026-10-20 | Spec drafted | n/a |
-| F13 | Interaction attempts that fire no beacon are not stored as evidence | 2026-10-20 | Spec drafted | n/a |
-| F14 | Gate checks that evidence IDs exist, not that they support the claim; recommendations unchecked | 2026-10-20 | Spec drafted | n/a |
+| F11 | LLM plan writes unsupported advice around correct deterministic gaps | 2026-10-20 | Fixed (unit tests + live reruns on both sites) | 2026-10-21 |
+| F12 | Crawler-authored `record_evidence` notes (some false) are cited as proof | 2026-10-20 | Fixed (tool removed; gate ignores model evidence; duplicate-beacon gap replaces the useful note) | 2026-10-21 |
+| F13 | Interaction attempts that fire no beacon are not stored as evidence | 2026-10-20 | Fixed (probe evidence) | 2026-10-21 |
+| F14 | Gate checks that evidence IDs exist, not that they support the claim; recommendations unchecked | 2026-10-20 | Fixed for plan rows and recommendations (basis-assigned evidence, templates, lint); gaps and event rows were already server-built | 2026-10-21 |
+| F15 | CSP gap claims a site-wide failure from per-page observations; a beacon fired on `/about` yet the events table was empty | 2026-10-21 | Open | n/a |
+| F16 | Events table shows duplicate `page_view` rows (same interaction) and click-triggered load events as a second row | 2026-10-21 | Open | n/a |
+| F1 | Validation loop never converges (3 rounds, Jev-Correct critiques each round) | 2026-10-20 | Open, re-measured 2026-10-21: unchanged; remaining critiques target deterministic tables | n/a |

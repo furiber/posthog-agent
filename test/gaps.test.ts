@@ -82,6 +82,40 @@ describe("buildGaps: tag present but nothing sent (F10, 2026-10-20)", () => {
   });
 });
 
+describe("buildGaps: duplicate beacon replaces the crawler's free-text note (F12, 2026-10-21)", () => {
+  const pv = (page: string) =>
+    ev({ kind: "beacon", dest: "ga4", pageUrl: page, payload: { eventName: "page_view", props: {}, requestUrl: "https://www.google-analytics.com/g/collect", method: "GET" } });
+  const DUP = "Duplicate beacon on one page load";
+
+  it("flags the same event firing twice for one page and cites both beacons", () => {
+    const a = pv("https://example.com/remote");
+    const b = pv("https://example.com/remote");
+    const gap = buildGaps(storeOf([a, b]), []).find((g) => g.title === DUP);
+    expect(gap?.severity).toBe("medium");
+    expect(gap?.evidenceIds).toEqual([a.id, b.id]);
+    expect(gap?.remedy).toContain("page_view");
+  });
+
+  it("does not flag one beacon, or the same event on different pages", () => {
+    expect(titles([pv("https://example.com/a")])).not.toContain(DUP);
+    expect(titles([pv("https://example.com/a"), pv("https://example.com/b")])).not.toContain(DUP);
+  });
+});
+
+describe("buildGaps: every gap carries a server-written remedy (F11)", () => {
+  it("gives the CSP gap a remedy naming the host and directive", () => {
+    const d = diag({ cspViolations: [{ blockedUri: "https://t.example.com/static/array.js", directive: "script-src" }] });
+    const gap = buildGaps(storeOf([phTag(), d]), []).find((g) => g.title === BLOCKED);
+    expect(gap?.remedy).toContain("t.example.com");
+    expect(gap?.remedy).toContain("script-src");
+  });
+
+  it("gives the no-cause gap a remedy that makes no causal claim", () => {
+    const gap = buildGaps(storeOf([phTag()]), []).find((g) => g.title === NO_EVENTS);
+    expect(gap?.remedy).toMatch(/verify/i);
+  });
+});
+
 describe("buildGaps: consent gap needs a beacon (F10)", () => {
   it("omits the consent gap when no beacon fired (it would claim beacons fire unconditionally)", () => {
     expect(titles([phTag(), consentDom()])).not.toContain("No consent-mode handling observed");

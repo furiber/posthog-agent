@@ -4,6 +4,7 @@ import type { AgentConfig } from "../config";
 import { LOW_EFFORT_PROVIDER_OPTIONS, ModelCallError, loopModel } from "../models";
 import type { BrowserPool, PageSession } from "../browser/driver";
 import { beaconEvidencePayload, parsePostHogInit } from "../browser/capture";
+import { interactionProbePayload } from "./recommend";
 import {
   CaptureCollector,
   fireInteraction,
@@ -81,8 +82,7 @@ STRICT PROCEDURE — follow it exactly, one tool call at a time:
 RULES:
 - Everything you know comes from tool results. Never invent events, URLs, or evidence.
 - If a tool returns an error, follow its instruction (move to the next page, or finish). Do not repeat a failed call more than once.
-- Do not call any tool after finish_crawl.
-- If you notice something about the page's analytics worth remembering (for example a consent banner, a duplicate event, an odd tag), call record_evidence with a short note.`;
+- Do not call any tool after finish_crawl.`;
 
 function freshPageState(): PageState {
   return { steps: 0, attempts: 0, complex: false, visited: false, failed: false, beacons: 0, evidenceIds: [] };
@@ -200,7 +200,7 @@ async function closeCurrent(shared: CrawlShared): Promise<void> {
   }
 }
 
-/** The five crawler tools (record_evidence included). */
+/** The crawler tools. None lets the model write evidence: every fact is captured by the server. */
 function buildTools(shared: CrawlShared) {
   return {
     sitemap_discover: tool({
@@ -438,6 +438,17 @@ function buildTools(shared: CrawlShared) {
         if ("error" in out) return out;
         state.steps += 1;
         const ids = recordCaptures(shared, out.fired, url, stepId);
+        // F13: the attempt is evidence even when no beacon fired ("clicked a CTA, nothing sent").
+        const probe = shared.store.appendEvidence({
+          pageUrl: url,
+          timestamp: new Date().toISOString(),
+          kind: "dom",
+          source: "capture",
+          captureId: `I:${url}:${stepId}`,
+          interactionStepId: stepId,
+          payload: interactionProbePayload(chosen, out.detail, out.fired.length, stepId),
+        });
+        if (probe) ids.push(probe.id);
         state.evidenceIds.push(...ids);
         shared.sse("interaction", { url, stepId, preset: chosen, detail: out.detail, firedEvents: ids.length });
         shared.store.log("interaction", { url, stepId, preset: chosen, detail: out.detail, evidence: ids.length });
@@ -454,29 +465,6 @@ function buildTools(shared: CrawlShared) {
           evidenceIds: ids,
           stepsUsed: state.steps,
         };
-      },
-    }),
-
-    record_evidence: tool({
-      description:
-        "Record an observation you made from tool results (a consent note, a duplicate event, an odd tag) into the append-only evidence store. Never use it to invent facts; only to note what tool results showed.",
-      inputSchema: z.object({
-        note: z.string().describe("One-sentence observation grounded in tool results"),
-        url: z.string().optional().describe("Page URL the observation is about"),
-      }),
-      execute: async ({ note, url }) => {
-        const guard = wallClockGuard(shared);
-        if (guard) return guard;
-        const pageUrl = url ?? shared.current?.url ?? shared.url;
-        const e = shared.store.appendEvidence({
-          pageUrl,
-          timestamp: new Date().toISOString(),
-          kind: "dom",
-          source: "model",
-          payload: { note },
-        });
-        shared.sse("evidence", { added: 1, modelNote: note.slice(0, 80) });
-        return { ok: true, id: e?.id ?? null };
       },
     }),
 
