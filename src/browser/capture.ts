@@ -31,6 +31,14 @@ export function isAnalyticsScriptSrc(src: string, opts?: ClassifyOpts): boolean 
   }
 }
 
+/** Chrome's console message for a Content-Security-Policy block: the blocked URL (query stripped) and the violated directive name. */
+export function parseCspViolation(text: string): { blockedUri: string; directive: string } | null {
+  if (!/Content Security Policy directive/i.test(text)) return null;
+  const uri = text.match(/'((?:https?|wss?):\/\/[^']+)'/)?.[1];
+  const directive = text.match(/directive:\s*"([a-z-]+)/i)?.[1];
+  return uri && directive ? { blockedUri: redactUrl(uri), directive } : null;
+}
+
 /** Pull the api host and a masked token out of a script body that calls posthog.init(...). */
 export function parsePostHogInit(text: string): { apiHost?: string; tokenMasked?: string } | null {
   const m = text.match(/posthog\.init\s*\(\s*["']([^"']{6,})["']/);

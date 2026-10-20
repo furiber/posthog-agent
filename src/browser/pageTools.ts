@@ -1,5 +1,5 @@
 import type { CapturedRequest, InteractionKind } from "../schemas/evidence";
-import { classifyAnalyticsRequest, resolvePostHogEvents, truncateRaw } from "./capture";
+import { classifyAnalyticsRequest, parseCspViolation, redactUrl, resolvePostHogEvents, truncateRaw } from "./capture";
 import type { BrowserPool, Page } from "./driver";
 
 /**
@@ -45,6 +45,24 @@ export class CaptureCollector {
   private readonly resolved = new Map<string, CapturedRequest>();
   /** First-party hosts learned to serve PostHog (asset path seen, or posthog.init api_host). */
   readonly posthogHosts = new Set<string>();
+  /** Console CSP violations and failed analytics requests, per page URL (F10). */
+  private readonly diag = new Map<string, { csp: { blockedUri: string; directive: string }[]; failed: { url: string; failure: string }[] }>();
+
+  private diagFor(pageUrl: string) {
+    let d = this.diag.get(pageUrl);
+    if (!d) {
+      d = { csp: [], failed: [] };
+      this.diag.set(pageUrl, d);
+    }
+    return d;
+  }
+
+  /** Deduplicated diagnostics collected for a page; empty arrays when nothing went wrong. */
+  diagnosticsFor(pageUrl: string): { cspViolations: { blockedUri: string; directive: string }[]; failedAnalyticsRequests: { url: string; failure: string }[] } {
+    const d = this.diag.get(pageUrl);
+    const uniq = <T,>(items: T[]) => [...new Map(items.map((i) => [JSON.stringify(i), i])).values()].slice(0, 10);
+    return { cspViolations: uniq(d?.csp ?? []), failedAnalyticsRequests: uniq(d?.failed ?? []) };
+  }
 
   learnHost(host: string | undefined): void {
     if (host) this.posthogHosts.add(host.toLowerCase());
@@ -52,6 +70,27 @@ export class CaptureCollector {
 
   /** Attach a request listener to a page. Never throws. */
   attach(page: Page, pageUrl: string): void {
+    try {
+      page.on("console", (msg: { type: () => string; text: () => string }) => {
+        try {
+          if (msg.type() !== "error") return;
+          const v = parseCspViolation(msg.text());
+          if (v) this.diagFor(pageUrl).csp.push(v);
+        } catch {
+          /* diagnostics must never break the crawl */
+        }
+      });
+      page.on("requestfailed", (req: { url: () => string; method: () => string; failure: () => { errorText: string } | null }) => {
+        try {
+          if (!classifyAnalyticsRequest(req.url(), req.method(), null, { posthogHosts: this.posthogHosts })) return;
+          this.diagFor(pageUrl).failed.push({ url: redactUrl(req.url()), failure: req.failure()?.errorText ?? "unknown" });
+        } catch {
+          /* ignore */
+        }
+      });
+    } catch {
+      /* console/requestfailed events unavailable in this driver: skip diagnostics */
+    }
     try {
       page.on("request", (req: {
         url: () => string;
@@ -182,6 +221,15 @@ export async function openPage(
     }
     // Let auto-events and tag scripts fire after load.
     await page.waitForTimeout(2_500);
+    // A PostHog/GA tag loaded but nothing was sent yet: give the library longer
+    // before concluding it is silent (GTM containers may legitimately send nothing).
+    const seen = await collector.captured();
+    if (
+      seen.some((c) => c.classified.kind === "script" && c.classified.dest !== "gtm") &&
+      !seen.some((c) => c.classified.kind === "beacon")
+    ) {
+      await page.waitForTimeout(5_000);
+    }
   } catch (e) {
     await session.close();
     throw e;

@@ -102,9 +102,20 @@ Live (`cf dev`, pageBudget 3):
 5. `npm test`, `npm run typecheck`, live reruns on both sites.
 6. Update findings log; `CHANGELOG.md` entry; commit.
 
+## 7. Build and verification results (2026-10-20)
+
+- Context7 (`/microsoft/playwright`) confirmed `page.on('console')` with `msg.type()`/`msg.text()` and `page.on('requestfailed')` with `request.failure()?.errorText` (can be null). `@cloudflare/playwright` 1.3.6 types include both events. Not yet tried on a deployed Browser Rendering preview.
+- Built tests-first: 67/67 tests pass (was 56), typecheck clean.
+- **Live rerun, nobodycame.app:** HIGH gap "Analytics tag present but blocked by the site's Content-Security-Policy" naming `https://t.nobodycame.app/static/array.js` and `script-src`, citing E000001, E000008, E000010. The false "beacons fire unconditionally" consent gap is gone.
+- **Live rerun, coffeerouletteapp.com:** gaps unchanged (consent, pageview-only). No new gap on a site that does send beacons.
+- Deviation from section 2.4: the consent gap is only suppressed when zero beacons fired, not whenever the new gap exists. A site where GA4 fires but PostHog is silent still gets the consent gap, because the GA4 beacons do fire unconditionally.
+- **Still open (model-written advice, F2/F8 class):** on nobodycame.app the synthesizer still wrote unsupported recommendations: `cta_click` ("CTA clicks were observed on three pages", no such evidence), a consent banner, and "add ph.js to script-src" (ph.js loads from `'self'`, so it is not blocked). The deterministic gap is right; the LLM plan around it is not.
+- Positive path (owner fixes the CSP, rerun shows `$pageview`) not run: the site's CSP has not been changed.
+
 ## Findings log
 
 | ID | Finding | Date found | Status | Date fixed |
 |---|---|---|---|---|
-| F9 | nobodycame.app CSP blocks its own PostHog proxy script | 2026-10-20 | Open (site fix) | n/a |
-| F10 | Agent cannot explain "tag present but no beacons"; false "beacons fire unconditionally" claim | 2026-10-20 | Spec drafted | n/a |
+| F9 | nobodycame.app CSP blocks its own PostHog proxy script | 2026-10-20 | Open (site fix, not in this repo) | n/a |
+| F10 | Agent cannot explain "tag present but no beacons"; false "beacons fire unconditionally" claim | 2026-10-20 | Fixed (unit tests + live rerun on nobodycame.app) | 2026-10-20 |
+| F11 | LLM plan still writes unsupported advice around correct deterministic gaps (`cta_click` "observed", wrong `ph.js` CSP claim) | 2026-10-20 | Open (same family as F2/F8) | n/a |

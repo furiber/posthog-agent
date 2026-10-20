@@ -379,6 +379,18 @@ function buildTools(shared: CrawlShared) {
           },
         });
         if (consentEvidence) ids.push(consentEvidence.id);
+        const diag = shared.collector.diagnosticsFor(url);
+        if (diag.cspViolations.length > 0 || diag.failedAnalyticsRequests.length > 0) {
+          const e = shared.store.appendEvidence({
+            pageUrl: url,
+            timestamp: new Date().toISOString(),
+            kind: "dom",
+            source: "capture",
+            captureId: `D:${url}:diag`,
+            payload: { ...diag, note: "console CSP errors and failed analytics requests" },
+          });
+          if (e) ids.push(e.id);
+        }
         state.evidenceIds.push(...ids);
         shared.sse("tool_step", { tool: "inspect_dom", url, status: "ok", evidence: ids.length });
         return {

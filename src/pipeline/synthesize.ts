@@ -167,6 +167,23 @@ function inferDest(e: Evidence): string {
   return "other";
 }
 
+/** Beacon destinations that prove a tag of this destination is sending. GTM is excluded: a container can be empty. */
+const BEACON_DESTS: Record<string, string[]> = { posthog: ["posthog"], gtag: ["ga4", "gtag"], ga4: ["ga4", "gtag"] };
+
+function records(v: unknown): Record<string, unknown>[] {
+  return Array.isArray(v) ? v.filter((x): x is Record<string, unknown> => Boolean(x) && typeof x === "object") : [];
+}
+
+/** Hosts a tag evidence item points at: its script host and a "→ host" proxy target in tagId. */
+function hostsOf(e: Evidence): string[] {
+  const out: string[] = [];
+  const src = typeof e.payload.scriptSrc === "string" ? safeHost(e.payload.scriptSrc) : null;
+  if (src) out.push(src);
+  const proxy = typeof e.payload.tagId === "string" ? e.payload.tagId.match(/→\s*(\S+)/)?.[1] : undefined;
+  if (proxy) out.push(proxy);
+  return out;
+}
+
 function safeHost(url: string): string | null {
   try {
     return new URL(url).hostname;
@@ -184,7 +201,50 @@ export function buildGaps(store: RunStore, eventRows: EventRow[]): GapItem[] {
   );
   const anyBanner = consentEvidence.some((e) => Boolean(e.payload.consentBannerSelector));
   const anyApi = consentEvidence.some((e) => Boolean(e.payload.consentApi));
-  if (consentEvidence.length > 0 && !anyApi) {
+  const beacons = evidence.filter((e) => e.kind === "beacon");
+
+  // F10: a PostHog / GA tag is present but sent nothing. Say why when the browser told us.
+  const diagEvidence = evidence.filter((e) => e.kind === "dom" && ("cspViolations" in e.payload || "failedAnalyticsRequests" in e.payload));
+  const csp = diagEvidence.flatMap((e) => records(e.payload.cspViolations).map((v) => ({ id: e.id, uri: String(v.blockedUri), directive: String(v.directive) })));
+  const failed = diagEvidence.flatMap((e) => records(e.payload.failedAnalyticsRequests).map((v) => ({ id: e.id, url: String(v.url), failure: String(v.failure) })));
+  const silentGroups = new Set<string>();
+  for (const tag of buildTagInventory(store)) {
+    const sendsTo = BEACON_DESTS[tag.destination];
+    if (!sendsTo || silentGroups.has(sendsTo.join())) continue;
+    if (beacons.some((b) => b.dest && sendsTo.includes(b.dest))) continue;
+    silentGroups.add(sendsTo.join());
+    const tagEvidence = evidence.filter((e) => e.kind === "snippet" && tag.evidenceIds.includes(e.id));
+    const hosts = new Set(tagEvidence.flatMap((e) => hostsOf(e)));
+    const label = tag.destination === "posthog" ? "PostHog" : "Google Analytics";
+    const relevant = (host: string | null) => Boolean(host) && (hosts.has(host!) || (tag.destination === "posthog" ? host!.includes("posthog") : /googletagmanager|google-analytics/.test(host!)));
+    const blocked = csp.find((v) => relevant(safeHost(v.uri)));
+    const failing = failed.find((v) => relevant(safeHost(v.url)));
+    if (blocked) {
+      gaps.push({
+        title: "Analytics tag present but blocked by the site's Content-Security-Policy",
+        severity: "high",
+        detail: `The ${label} tag is in the page, but its Content-Security-Policy blocks ${blocked.uri} (${blocked.directive}), so the library never starts and no events are sent. Allow that host in script-src, and in connect-src for the ingestion host.`,
+        evidenceIds: [...tag.evidenceIds.slice(0, 3), blocked.id],
+      });
+    } else if (failing) {
+      gaps.push({
+        title: "Analytics requests are failing",
+        severity: "high",
+        detail: `${label} requests are failing in the browser: ${failing.url} (${failing.failure}). Possible causes: an ad blocker, a network error, or CORS.`,
+        evidenceIds: [...tag.evidenceIds.slice(0, 3), failing.id],
+      });
+    } else {
+      gaps.push({
+        title: "Analytics tag present but no events observed",
+        severity: "medium",
+        detail: `The ${label} tag was found but no analytics request was captured on the visited pages. Possible causes: events fire only after an interaction or consent, the library had not finished loading when the crawl moved on, or a block the crawler cannot see. Verify in a real browser.`,
+        evidenceIds: tag.evidenceIds.slice(0, 3),
+      });
+    }
+  }
+
+  // The consent claim "beacons fire unconditionally" needs at least one beacon.
+  if (consentEvidence.length > 0 && !anyApi && beacons.length > 0) {
     gaps.push({
       title: anyBanner ? "Consent banner present but no consent-mode integration observed" : "No consent-mode handling observed",
       severity: "high",

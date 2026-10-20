@@ -3,6 +3,7 @@ import {
   beaconEvidencePayload,
   classifyAnalyticsRequest,
   firstEventName,
+  parseCspViolation,
   parseGa4Collect,
   parsePostHogEvents,
   parsePostHogInit,
@@ -145,6 +146,25 @@ describe("PostHog behind a first-party proxy (F6, 2026-10-20)", () => {
       tokenMasked: "sTMFPs…",
     });
     expect(parsePostHogInit("nothing to see here")).toBeNull();
+  });
+});
+
+describe("parseCspViolation (F10, 2026-10-20)", () => {
+  it("extracts the blocked URL and directive from Chrome's console message", () => {
+    const text =
+      "Loading the script 'https://t.nobodycame.app/static/array.js' violates the following Content Security Policy directive: \"script-src 'self' 'unsafe-inline' https://eu.i.posthog.com\". Note that 'script-src-elem' was not explicitly set, so 'script-src' is used as a fallback. The action has been blocked.";
+    expect(parseCspViolation(text)).toEqual({ blockedUri: "https://t.nobodycame.app/static/array.js", directive: "script-src" });
+  });
+
+  it("handles connect-src violations", () => {
+    const text =
+      "Refused to connect to 'https://t.example.com/e/?ip=1' because it violates the following Content Security Policy directive: \"connect-src 'self'\".";
+    expect(parseCspViolation(text)).toEqual({ blockedUri: "https://t.example.com/e/", directive: "connect-src" });
+  });
+
+  it("returns null for unrelated console errors", () => {
+    expect(parseCspViolation("Uncaught TypeError: x is not a function")).toBeNull();
+    expect(parseCspViolation("")).toBeNull();
   });
 });
 
