@@ -10,6 +10,7 @@
     "typecheck": "cf workers types && tsc --noEmit",
     "test": "vitest run",
     "parity": "node scripts/parity.mjs",
+    "challenge:check:openrouter": "node challenge/check.ts",
     "challenge:check": "cd challenge/upstream/claude-agent-sdk-challenge/day-1 && uv run python -X utf8 check_setup.py"
   },
   "dependencies": {
@@ -20,6 +21,7 @@
     "zod": "^4.6.7"
   },
   "devDependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.3.305",
     "@cloudflare/vite-plugin": "^2.0.0-beta.v.1",
     "@types/node": "^26.6.5",
     "cf": "^1.0.0-beta.18",
