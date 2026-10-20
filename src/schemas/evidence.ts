@@ -57,6 +57,10 @@ export const ClassifiedRequestSchema = z.discriminatedUnion("kind", [
     /** Empty for config endpoints (e.g. PostHog /decide) that carry no events. */
     events: z.array(BeaconEventSchema),
     raw: z.string().optional(),
+    /** GA4 measurement id (G-…) when the request carries one. */
+    tid: z.string().optional(),
+    /** Consent Mode state Google appends to collect requests (gcd, gcs, dma, npa). */
+    consent: z.record(z.string(), z.string()).optional(),
   }),
   z.object({
     kind: z.literal("script"),

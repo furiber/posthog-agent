@@ -46,7 +46,7 @@ export interface CrawlShared {
   pageBudget: number;
   pages: string[];
   pageStates: Map<string, PageState>;
-  current: { url: string; session: PageSession; complex: boolean } | null;
+  current: { url: string; session: PageSession; complex: boolean; settled: boolean } | null;
   interactionSeq: number;
   finished: boolean;
   finishReason: string;
@@ -256,7 +256,7 @@ function buildTools(shared: CrawlShared) {
         if ("error" in out) return out;
         state.visited = true;
         state.complex = out.complex;
-        shared.current = { url, session: out.session, complex: out.complex };
+        shared.current = { url, session: out.session, complex: out.complex, settled: out.settled };
         state.steps += 1;
         const ids = recordCaptures(shared, out.loadCaptures, url);
         state.evidenceIds.push(...ids);
@@ -379,6 +379,35 @@ function buildTools(shared: CrawlShared) {
           },
         });
         if (consentEvidence) ids.push(consentEvidence.id);
+        // F21 load proof inputs: runtime objects, tag script response statuses, and whether the page settled.
+        const lc = shared.store.appendEvidence({
+          pageUrl: url,
+          timestamp: new Date().toISOString(),
+          kind: "dom",
+          source: "capture",
+          captureId: `D:${url}:loadcheck`,
+          payload: {
+            loadcheck: true,
+            settled: shared.current.settled,
+            runtime: out.runtime,
+            scriptStatuses: shared.collector.scriptStatusesFor(url),
+            note: "tag runtime objects and script response statuses",
+          },
+        });
+        if (lc) ids.push(lc.id);
+        // F20/F21 traffic inventory: third-party hosts contacted and analytics-looking requests we did not recognise.
+        const net = shared.collector.trafficFor(url);
+        if (net.traffic.length > 0 || net.unrecognised.length > 0) {
+          const e = shared.store.appendEvidence({
+            pageUrl: url,
+            timestamp: new Date().toISOString(),
+            kind: "dom",
+            source: "capture",
+            captureId: `D:${url}:traffic`,
+            payload: { ...net, note: "third-party hosts contacted after load and unrecognised analytics-looking requests" },
+          });
+          if (e) ids.push(e.id);
+        }
         const diag = shared.collector.diagnosticsFor(url);
         if (diag.cspViolations.length > 0 || diag.failedAnalyticsRequests.length > 0) {
           const e = shared.store.appendEvidence({

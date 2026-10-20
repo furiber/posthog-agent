@@ -89,6 +89,21 @@ Code cause: `src/browser/capture.ts` matches GA4 only when the host ends in `goo
 
 **Risks:** over-matching `/g/collect` on non-Google sites (mitigated by requiring `v=2` and `tid=G-`); regional/ad-product beacons (`ccm/collect`, `ga-audiences`) are Google Ads, not GA4 events, so they go to the inventory, not the events table.
 
+### Day 1 results (2026-10-21)
+
+- **Built tests-first:** 31 failing tests written before code (classifier fixtures from real aa.co.nz URLs, load-proof states, gap wording, consent signals). 128/128 tests pass (was 97); `npm run typecheck` clean. Added `playwright-core` as a dev dependency for the parity script.
+- **Done as specced:** GA4 recognised by shape (Google hosts, `*.g.doubleclick.net`, learned first-party sGTM hosts, or `v=2` + `G-` id); batched POST-body events; Consent Mode signals parsed and the consent finding rewritten; load proof per tag; traffic inventory with unrecognised analytics-looking requests; new settle sequence; tag State column in the report.
+- **Parity script** (`npm run parity -- <url>`): loads a site in local Chromium and lists every analytics-looking request with our verdict; exits 1 on any unrecognised one. Result on 2026-10-21: aa.co.nz, coffeerouletteapp.com, nobodycame.app, posthog.com all **0 unrecognised** (it first caught sGTM plumbing, PostHog `/s/`, `/i/v1/logs`, `/api/surveys` and `*.json` assets as false alarms, now classified as noise).
+- **Live agent runs (all four sites):**
+  - aa.co.nz: both `G-` ids and the GTM container `loaded_and_firing`; events `page_view`, `scroll`, `user_engagement` captured from `analytics.google.com` and the first-party sGTM host; consent finding now "Consent Mode signals present, no banner observed" (gcd, dma, npa shown). Before: "no events observed".
+  - nobodycame.app: both PostHog rows `blocked` (CSP `script-src`), unchanged conclusion.
+  - coffeerouletteapp.com: gtag and GTM `loaded_and_firing`, events incl. `click`, `file_download`, `scroll`.
+  - posthog.com: PostHog rows `loaded_and_firing`, events `$autocapture`, `$web_vitals`, `$feature_flag_called` and others (first positive PostHog run).
+- **Live runs exposed three bugs, fixed with tests:** the duplicate-beacon finding flagged two different `G-` ids each sending a `page_view`, and PostHog's `$feature_flag_called` (repeats by design); `posthog-recorder.js` was labelled `gtag` because a case-insensitive `G-` pattern matched "g-recorder". The finding now fires only for once-per-load events per measurement id.
+- **Deviations from the plan:** a sixth state `partially_firing` (some ids fire, some do not) was added because aa.co.nz has two ids; settle timings are constants in `pageTools.ts`, not yet configurable; the real-browser baseline is the parity script plus a manual check in the in-app browser, not an automated diff against it.
+- **Definition of done (`check_setup.py` green): 2 of 3 checks green.** Python and the SDK pass; the API key line stays red until you put your `sk-ant-` key in `challenge/upstream/claude-agent-sdk-challenge/.env`. I cannot enter it.
+- **Still open from Day 1 scope:** nothing; the remaining defects below move to Day 2.
+
 ## 4. Day 2: Accurate tables, lean loop
 
 **Goal:** every row in the report is right, and the model is only used where it still writes something.
@@ -198,3 +213,9 @@ Status: Day 1 approved. Build started: the parity script and the setup check com
 | F22 | Probe field `beaconsFired` counts script loads as beacons | 2026-10-21 | Open (Day 2) | n/a |
 | F23 | Custom `dataLayer` events (e.g. `quality_traffic` on aa.co.nz) are not captured as events | 2026-10-21 | Open (Day 2) | n/a |
 | F24 | Local trace upload to Langfuse returns 401 | 2026-10-21 | Open (Day 2) | n/a |
+| F20 | (update) GA4 recognised by shape | 2026-10-21 | Fixed (unit tests, parity script, live aa.co.nz) | 2026-10-21 |
+| F21 | (update) Load proof per tag, no "had not finished loading" guess | 2026-10-21 | Fixed (unit tests, live on four sites) | 2026-10-21 |
+| F3 | (update) Consent Mode signals parsed; finding reworded | 2026-10-21 | Fixed (unit tests, live aa.co.nz and coffeerouletteapp.com) | 2026-10-21 |
+| F25 | Jev validation fails with HTTP 400 `max_tokens_exceeded` on a large evidence set (posthog.com run), shipping a partial report | 2026-10-21 | Open (Day 2: loop scoped to plan rows removes most of the input) | n/a |
+| F26 | Duplicate/split event rows seen again: `page_view` and `scroll` appear as both `load` and `click` rows after a click-triggered navigation (aa.co.nz) | 2026-10-21 | Open (Day 2, same as F16) | n/a |
+| F27 | `check_setup.py` API-key check red: key not yet provided | 2026-10-21 | Open (needs you) | n/a |

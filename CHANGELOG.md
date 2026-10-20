@@ -4,6 +4,20 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Fixed
+
+- Google Analytics 4 is now detected on every endpoint it uses: `analytics.google.com`, `*.g.doubleclick.net`, regional hosts and first-party server-side GTM hosts (for example `analytics.aa.co.nz`). Previously only `google-analytics.com` was recognised, so sites like aa.co.nz were reported as having no events. Extra events batched in a POST body are read too.
+- The "tag present but no events observed" finding no longer guesses that the library "had not finished loading"; its wording now follows the load proof below.
+- The "duplicate beacon" finding no longer flags two measurement ids each sending their own `page_view`, or PostHog events that repeat by design. A PostHog `posthog-recorder.js` script is no longer labelled as Google Analytics.
+
+### Added
+
+- Each tag in the report now has a state: loaded and firing, partially firing, loaded but not firing, blocked, referenced but never loaded, or unknown, with the evidence behind it (window objects such as `google_tag_manager`, script response status, CSP blocks).
+- Google Consent Mode signals (`gcd`, `dma`, `npa`) on the wire are reported as "Consent Mode signals present" instead of "no consent handling".
+- When a tag is silent, the finding lists analytics-looking requests the crawler did not recognise, so the verdict can be checked.
+- `npm run parity -- <url>` loads a site in a real Chromium and lists every analytics-looking request with whether the crawler recognises it.
+- Pages are now given a longer settle (network idle, scroll, dwell) before a tag is called silent.
+
 ### Changed
 
 - Recommendations are now written by the server from the findings, not by the model, so every recommendation maps to a finding with evidence IDs. Tracking-plan rows must point at a finding or an observed event, and new-event proposals (click, form, consent) now require proof the interaction exists on the site.

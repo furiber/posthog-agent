@@ -11,6 +11,7 @@ import {
 } from "../schemas/report";
 import type { RunStore } from "../store";
 import { conformsTo, deriveConvention, isReservedEventName, toConvention, type DerivedConvention } from "./convention";
+import { computeTagStates } from "./loadproof";
 import { addAdmissible, evidenceCorpus, lintClaim, recommendationsFromGaps } from "./recommend";
 import { assistantMessage, type Observation, type Trace } from "../trace";
 
@@ -161,9 +162,9 @@ export function buildTagInventory(store: RunStore): TagInventoryItem[] {
 
 function inferDest(e: Evidence): string {
   const src = typeof e.payload.scriptSrc === "string" ? e.payload.scriptSrc : JSON.stringify(e.payload);
-  if (/GTM-|gtm\.js/i.test(src)) return "gtm";
-  if (/G-[A-Z0-9]{6,}|gtag/i.test(src)) return "gtag";
-  if (/posthog/i.test(src)) return "posthog";
+  if (/posthog/i.test(src)) return "posthog"; // before gtag: a /i flag would match "g-recorder" in posthog-recorder.js
+  if (/GTM-[A-Z0-9]{4,}|gtm\.js/.test(src)) return "gtm";
+  if (/\bG-[A-Z0-9]{6,}\b|gtag\/js/.test(src)) return "gtag";
   if (/google-analytics/i.test(src)) return "ga4";
   return "other";
 }
@@ -211,7 +212,14 @@ export function buildGaps(store: RunStore, eventRows: EventRow[]): GapItem[] {
   const csp = diagEvidence.flatMap((e) => records(e.payload.cspViolations).map((v) => ({ id: e.id, uri: String(v.blockedUri), directive: String(v.directive) })));
   const failed = diagEvidence.flatMap((e) => records(e.payload.failedAnalyticsRequests).map((v) => ({ id: e.id, url: String(v.url), failure: String(v.failure) })));
   const silentGroups = new Set<string>();
-  for (const tag of buildTagInventory(store)) {
+  // Analytics-looking traffic the classifier did not recognise (so a "silent" verdict can be checked by the reader).
+  const trafficEvidence = evidence.filter((e) => e.kind === "dom" && "unrecognised" in e.payload);
+  const unrecognised = trafficEvidence.flatMap((e) => records(e.payload.unrecognised).map((r) => String(r.url)));
+  const trafficHint =
+    unrecognised.length > 0
+      ? ` ${unrecognised.length} analytics-looking request${unrecognised.length === 1 ? "" : "s"} to ${[...new Set(unrecognised.map((u) => safeHost(u) ?? u))].slice(0, 3).join(", ")} ${unrecognised.length === 1 ? "was" : "were"} not recognised by the crawler and may be the missing events.`
+      : "";
+  for (const tag of computeTagStates(buildTagInventory(store), evidence)) {
     const sendsTo = BEACON_DESTS[tag.destination];
     if (!sendsTo || silentGroups.has(sendsTo.join())) continue;
     if (beacons.some((b) => b.dest && sendsTo.includes(b.dest))) continue;
@@ -239,21 +247,45 @@ export function buildGaps(store: RunStore, eventRows: EventRow[]): GapItem[] {
         remedy: `Check why ${failing.url} fails (${failing.failure}): an ad blocker, a network error or CORS.`,
       });
     } else {
-      gaps.push({
-        title: "Analytics tag present but no events observed",
-        severity: "medium",
-        detail: `The ${label} tag was found but no analytics request was captured on the visited pages. Possible causes: events fire only after an interaction or consent, the library had not finished loading when the crawl moved on, or a block the crawler cannot see. Verify in a real browser.`,
-        evidenceIds: tag.evidenceIds.slice(0, 3),
-        remedy: `Verify in a real browser that the ${label} tag sends events; check consent gating and load timing.`,
-      });
+      const evidenceIds = [...tag.evidenceIds.slice(0, 3), ...trafficEvidence.slice(0, 1).map((e) => e.id)];
+      const remedy = `Verify in a real browser that the ${label} tag sends events; check consent gating and load timing.`;
+      if (tag.state === "loaded_not_firing") {
+        gaps.push({
+          title: "Analytics tag loaded but sent no events",
+          severity: "medium",
+          detail: `The ${label} tag loaded (${tag.stateDetail ?? "runtime object present"}) but no analytics request was captured after the full settle (network idle, scroll and dwell) on the visited pages. Possible causes: events fire only after an interaction or consent, or a block the crawler cannot see.${trafficHint}`,
+          evidenceIds,
+          remedy,
+        });
+      } else if (tag.state === "referenced_not_loaded") {
+        gaps.push({
+          title: "Analytics tag referenced but never loaded",
+          severity: "medium",
+          detail: `The ${label} tag appears in the page (${tag.stateDetail ?? "inline reference"}) but its script or library never loaded, so nothing can be sent.${trafficHint}`,
+          evidenceIds,
+          remedy: `Check why the ${label} loader never runs on the page (script order, a conditional, or a failed request).`,
+        });
+      } else {
+        gaps.push({
+          title: "Analytics tag present but no events observed",
+          severity: "medium",
+          detail: `The ${label} tag was found but no analytics request was captured, and the crawl could not prove the tag loaded${tag.state === "unknown" && tag.stateDetail ? ` (${tag.stateDetail})` : ""}. Possible causes: events fire only after an interaction or consent, the crawl ended before the page settled, or a block the crawler cannot see. Verify in a real browser.${trafficHint}`,
+          evidenceIds,
+          remedy,
+        });
+      }
     }
   }
 
   // F12: the same event firing more than once for one page load (replaces the crawler's free-text note).
+  // Only events that should fire once per load (PostHog `$feature_flag_called` and `$autocapture` repeat by design),
+  // and per measurement id (two G- tags each send their own page_view).
+  const ONCE_PER_LOAD = new Set(["page_view", "$pageview", "first_visit", "session_start"]);
   const loadBeacons = new Map<string, Evidence[]>();
   for (const b of beacons) {
-    if (typeof b.payload.eventName !== "string" || b.interactionStepId) continue;
-    const key = `${b.pageUrl}|${b.dest}|${b.payload.eventName}`;
+    if (typeof b.payload.eventName !== "string" || b.interactionStepId || !ONCE_PER_LOAD.has(b.payload.eventName)) continue;
+    const tid = typeof b.payload.tid === "string" ? b.payload.tid : String((b.payload.props as Record<string, unknown> | undefined)?.tid ?? "");
+    const key = `${b.pageUrl}|${b.dest}|${tid}|${b.payload.eventName}`;
     loadBeacons.set(key, [...(loadBeacons.get(key) ?? []), b]);
   }
   for (const group of loadBeacons.values()) {
@@ -269,7 +301,20 @@ export function buildGaps(store: RunStore, eventRows: EventRow[]): GapItem[] {
   }
 
   // The consent claim "beacons fire unconditionally" needs at least one beacon.
-  if (consentEvidence.length > 0 && !anyApi && beacons.length > 0) {
+  const signalBeacon = beacons.find((b) => b.payload.consentSignals && typeof b.payload.consentSignals === "object");
+  if (consentEvidence.length > 0 && !anyApi && beacons.length > 0 && signalBeacon) {
+    // F3: Google Consent Mode state is on the wire, so "no consent handling" would be false.
+    if (!anyBanner) {
+      const shown = Object.entries(signalBeacon.payload.consentSignals as Record<string, unknown>).map(([k, v]) => `${k}=${String(v)}`).join(", ");
+      gaps.push({
+        title: "Consent Mode signals present, no banner observed",
+        severity: "medium",
+        detail: `Google Consent Mode state is on the wire (${shown}), but no consent banner or consent API was observed on any visited page, so the defaults may be set statically rather than by a consent platform.`,
+        evidenceIds: [signalBeacon.id, ...consentEvidence.slice(0, 4).map((e) => e.id)],
+        remedy: "Confirm what sets the Consent Mode defaults and that a consent banner updates them.",
+      });
+    }
+  } else if (consentEvidence.length > 0 && !anyApi && beacons.length > 0) {
     gaps.push({
       title: anyBanner ? "Consent banner present but no consent-mode integration observed" : "No consent-mode handling observed",
       severity: "high",
@@ -387,7 +432,7 @@ export interface SynthResult {
 export async function synthesizeDraft(input: SynthesizeInput): Promise<SynthResult> {
   const { store } = input;
   const eventRows = buildEventRows(store);
-  const tagInventory = buildTagInventory(store);
+  const tagInventory = computeTagStates(buildTagInventory(store), store.listEvidence());
   const gaps = buildGaps(store, eventRows);
   const convention = deriveConvention(
     eventRows.map((r) => r.eventName),

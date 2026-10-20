@@ -31,10 +31,11 @@ export function renderMarkdown(report: Report): string {
   if (report.tagInventory.length === 0) {
     L.push("_No analytics tags found on any visited page._");
   } else {
-    L.push("| Destination | Injected via | Location | Detail | Evidence |");
-    L.push("|---|---|---|---|---|");
+    L.push("| Destination | Injected via | Location | Detail | State | Evidence |");
+    L.push("|---|---|---|---|---|---|");
     for (const t of report.tagInventory) {
-      L.push(`| ${t.destination}${contested(t.contested)} | ${esc(t.injectedVia)} | ${esc(t.location)} | ${esc(t.detail)} | ${t.evidenceIds.slice(0, 3).join(", ")} |`);
+      const state = t.state ? `**${t.state}**${t.stateDetail ? ` — ${esc(t.stateDetail)}` : ""}` : "—";
+      L.push(`| ${t.destination}${contested(t.contested)} | ${esc(t.injectedVia)} | ${esc(t.location)} | ${esc(t.detail)} | ${state} | ${t.evidenceIds.slice(0, 3).join(", ")} |`);
     }
   }
   L.push("");

@@ -1,5 +1,5 @@
 import type { CapturedRequest, InteractionKind } from "../schemas/evidence";
-import { classifyAnalyticsRequest, parseCspViolation, redactUrl, resolvePostHogEvents, truncateRaw } from "./capture";
+import { analyticsLikeReason, classifyAnalyticsRequest, isKnownNoise, parseCspViolation, redactUrl, resolvePostHogEvents, truncateRaw } from "./capture";
 import type { BrowserPool, Page } from "./driver";
 
 /**
@@ -18,6 +18,8 @@ export interface DomInspection {
   posthogInitScripts: { src: string; snippet: string }[];
   /** window.posthog state: the loader stub or the loaded library. */
   posthogRuntime: { loaded: boolean; apiHost: string | null } | null;
+  /** Objects tags create at runtime: proof a container or library actually ran (F21). */
+  runtime: { gtmContainers: string[]; gtagIds: string[]; dataLayerLength: number | null; gtag: boolean; posthog: "absent" | "stub" | "loaded" };
 }
 
 export interface InteractionResult {
@@ -68,8 +70,60 @@ export class CaptureCollector {
     if (host) this.posthogHosts.add(host.toLowerCase());
   }
 
+  /** First-party hosts learned to serve GA4 (a collect request with the GA4 shape, e.g. server-side GTM). */
+  readonly ga4Hosts = new Set<string>();
+  private classifyOpts() {
+    return { posthogHosts: this.posthogHosts, ga4Hosts: this.ga4Hosts };
+  }
+
+  /** Third-party traffic, unrecognised analytics-looking requests and tag script responses, per page (F20/F21). */
+  private readonly net = new Map<
+    string,
+    { hosts: Map<string, { count: number; failed: number }>; unrecognised: { url: string; why: string }[]; statuses: { src: string; status: number }[] }
+  >();
+  private netFor(pageUrl: string) {
+    let n = this.net.get(pageUrl);
+    if (!n) {
+      n = { hosts: new Map(), unrecognised: [], statuses: [] };
+      this.net.set(pageUrl, n);
+    }
+    return n;
+  }
+  private bumpHost(pageUrl: string, requestUrl: string, field: "count" | "failed"): void {
+    const host = new URL(requestUrl).hostname.toLowerCase();
+    if (host === new URL(pageUrl).hostname.toLowerCase()) return; // first-party assets are not traffic of interest
+    const n = this.netFor(pageUrl);
+    const h = n.hosts.get(host) ?? { count: 0, failed: 0 };
+    h[field] += 1;
+    n.hosts.set(host, h);
+  }
+
+  /** What the page talked to besides itself, and analytics-looking requests we did not recognise. */
+  trafficFor(pageUrl: string): { traffic: { host: string; count: number; failed: number }[]; unrecognised: { url: string; why: string }[] } {
+    const n = this.net.get(pageUrl);
+    const traffic = [...(n?.hosts ?? [])].map(([host, v]) => ({ host, ...v })).sort((a, b) => b.count - a.count).slice(0, 25);
+    return { traffic, unrecognised: n?.unrecognised ?? [] };
+  }
+
+  /** HTTP status of each tag script response seen on the page. */
+  scriptStatusesFor(pageUrl: string): { src: string; status: number }[] {
+    return this.net.get(pageUrl)?.statuses.slice(0, 20) ?? [];
+  }
+
   /** Attach a request listener to a page. Never throws. */
   attach(page: Page, pageUrl: string): void {
+    try {
+      page.on("response", (res: { url: () => string; status: () => number }) => {
+        try {
+          const c = classifyAnalyticsRequest(res.url(), "GET", null, this.classifyOpts());
+          if (c?.kind === "script") this.netFor(pageUrl).statuses.push({ src: res.url().slice(0, 200), status: res.status() });
+        } catch {
+          /* diagnostics must never break the crawl */
+        }
+      });
+    } catch {
+      /* response events unavailable in this driver */
+    }
     try {
       page.on("console", (msg: { type: () => string; text: () => string }) => {
         try {
@@ -82,7 +136,8 @@ export class CaptureCollector {
       });
       page.on("requestfailed", (req: { url: () => string; method: () => string; failure: () => { errorText: string } | null }) => {
         try {
-          if (!classifyAnalyticsRequest(req.url(), req.method(), null, { posthogHosts: this.posthogHosts })) return;
+          this.bumpHost(pageUrl, req.url(), "failed");
+          if (!classifyAnalyticsRequest(req.url(), req.method(), null, this.classifyOpts())) return;
           this.diagFor(pageUrl).failed.push({ url: redactUrl(req.url()), failure: req.failure()?.errorText ?? "unknown" });
         } catch {
           /* ignore */
@@ -99,9 +154,21 @@ export class CaptureCollector {
         postDataBuffer?: () => Uint8Array | null;
       }) => {
         try {
-          const classified = classifyAnalyticsRequest(req.url(), req.method(), null, { posthogHosts: this.posthogHosts });
-          if (!classified) return;
-          if (classified.kind === "script" && classified.dest === "posthog") this.learnHost(new URL(req.url()).hostname);
+          this.bumpHost(pageUrl, req.url(), "count");
+          const classified = classifyAnalyticsRequest(req.url(), req.method(), null, this.classifyOpts());
+          if (!classified) {
+            // Skip the page's own host: its assets are not third-party analytics (a site named "posthog" is not analytics).
+            const why = new URL(req.url()).hostname === new URL(pageUrl).hostname ? null : analyticsLikeReason(req.url());
+            const n = this.netFor(pageUrl);
+            const key = redactUrl(req.url());
+            if (why && !isKnownNoise(req.url()) && n.unrecognised.length < 10 && !n.unrecognised.some((r) => r.url === key)) {
+              n.unrecognised.push({ url: key, why });
+            }
+            return;
+          }
+          const reqHost = new URL(req.url()).hostname;
+          if (classified.kind === "script" && classified.dest === "posthog") this.learnHost(reqHost);
+          if (classified.kind === "beacon" && classified.dest === "ga4") this.ga4Hosts.add(reqHost.toLowerCase());
           this.seq += 1;
           this.pending.push({
             captureId: `C${this.seq}`,
@@ -137,7 +204,7 @@ export class CaptureCollector {
     } catch {
       bodyText = null;
     }
-    let classified = classifyAnalyticsRequest(entry.requestUrl, entry.method, bodyText, { posthogHosts: this.posthogHosts });
+    let classified = classifyAnalyticsRequest(entry.requestUrl, entry.method, bodyText, this.classifyOpts());
     if (!classified) return null;
     if (classified.kind === "beacon" && classified.dest === "posthog" && classified.events.length === 0) {
       const bytes = entry.bodyBuffer();
@@ -202,8 +269,11 @@ export async function openPage(
   complex: boolean;
   loadCaptures: CapturedRequest[];
   tookMs: number;
+  /** True when the full settle sequence completed; silence before that proves nothing. */
+  settled: boolean;
 }> {
   const started = Date.now();
+  let settled = false;
   const session = await pool.openSession();
   const page = session.page;
   collector.attach(page, url);
@@ -219,8 +289,19 @@ export async function openPage(
         throw e;
       }
     }
-    // Let auto-events and tag scripts fire after load.
+    // F21 settle: network idle (capped), a scroll to mid and bottom, a dwell, and a final window,
+    // so lazily loaded tags and scroll-triggered events get a fair chance before we call a tag silent.
     await page.waitForTimeout(2_500);
+    try {
+      await page.waitForLoadState("networkidle", { timeout: 8_000 });
+    } catch {
+      /* chatty pages never go idle; the dwell below still gives them time */
+    }
+    for (const fraction of [0.5, 1]) {
+      await page.evaluate((f) => window.scrollTo(0, Math.floor(document.body.scrollHeight * f)), fraction);
+      await page.waitForTimeout(700);
+    }
+    await page.waitForTimeout(1_500);
     // A PostHog/GA tag loaded but nothing was sent yet: give the library longer
     // before concluding it is silent (GTM containers may legitimately send nothing).
     const seen = await collector.captured();
@@ -230,6 +311,7 @@ export async function openPage(
     ) {
       await page.waitForTimeout(5_000);
     }
+    settled = true;
   } catch (e) {
     await session.close();
     throw e;
@@ -255,6 +337,7 @@ export async function openPage(
     complex,
     loadCaptures: await collector.captured(),
     tookMs,
+    settled,
   };
 }
 
@@ -430,6 +513,22 @@ export async function inspectDom(page: Page): Promise<DomInspection> {
       consent: { banner, api },
       posthogInitScripts,
       posthogRuntime,
+      runtime: (() => {
+        const w = window as unknown as {
+          google_tag_manager?: Record<string, unknown>;
+          dataLayer?: unknown[];
+          gtag?: unknown;
+          posthog?: { capture?: unknown; __loaded?: boolean };
+        };
+        const keys = Object.keys(w.google_tag_manager ?? {});
+        return {
+          gtmContainers: keys.filter((k) => /^GTM-/.test(k)),
+          gtagIds: keys.filter((k) => /^G-/.test(k)),
+          dataLayerLength: Array.isArray(w.dataLayer) ? w.dataLayer.length : null,
+          gtag: typeof w.gtag === "function",
+          posthog: w.posthog && typeof w.posthog.capture === "function" ? (w.posthog.__loaded ? ("loaded" as const) : ("stub" as const)) : ("absent" as const),
+        };
+      })(),
     };
   });
 }

@@ -9,6 +9,7 @@
     "typegen": "cf workers types",
     "typecheck": "cf workers types && tsc --noEmit",
     "test": "vitest run",
+    "parity": "node scripts/parity.mjs",
     "challenge:check": "cd challenge/upstream/claude-agent-sdk-challenge/day-1 && uv run python -X utf8 check_setup.py"
   },
   "dependencies": {
@@ -22,6 +23,7 @@
     "@cloudflare/vite-plugin": "^2.0.0-beta.v.1",
     "@types/node": "^26.6.5",
     "cf": "^1.0.0-beta.18",
+    "playwright-core": "^1.64.1",
     "typescript": "^7.0.2",
     "vitest": "^5.0.5"
   }

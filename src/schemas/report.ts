@@ -8,6 +8,17 @@ import { Destinations, InteractionKinds } from "./evidence";
  * one evidence ID; the final gate enforces it.
  */
 
+/** Do the tags load, and do they fire? Computed from captured evidence (see pipeline/loadproof.ts). */
+export const TagStates = [
+  "loaded_and_firing",
+  "partially_firing",
+  "loaded_not_firing",
+  "blocked",
+  "referenced_not_loaded",
+  "unknown",
+] as const;
+export type TagState = (typeof TagStates)[number];
+
 export const TagInventoryItemSchema = z.object({
   destination: z.enum(Destinations),
   /** Where/how the tag is injected, e.g. "inline <script> in <head>". */
@@ -18,6 +29,8 @@ export const TagInventoryItemSchema = z.object({
   detail: z.string(),
   evidenceIds: z.array(z.string().regex(/^E\d{6}$/)).min(1),
   contested: z.boolean().optional(),
+  state: z.enum(TagStates).optional(),
+  stateDetail: z.string().optional(),
 });
 export type TagInventoryItem = z.infer<typeof TagInventoryItemSchema>;
 

@@ -13,9 +13,56 @@ import type { BeaconEvent, CapturedRequest, ClassifiedRequest, Destination } fro
 
 const MAX_RAW = 400;
 
-/** Hosts learned at runtime to be a PostHog proxy (first-party ingestion host). */
+/** Hosts learned at runtime to be first-party proxies: PostHog ingestion, or server-side GTM serving GA4. */
 export interface ClassifyOpts {
   posthogHosts?: ReadonlySet<string>;
+  ga4Hosts?: ReadonlySet<string>;
+}
+
+/** GA4 collect endpoints. Google serves them from several hosts, and sites proxy them through their own. */
+const GA4_COLLECT_PATH = /^\/(g|j)\/(s\/)?collect$/;
+const GOOGLE_GA4_HOST = /(^|\.)(google-analytics\.com|analytics\.google\.com|g\.doubleclick\.net)$/;
+const GA4_MEASUREMENT_ID = /^G-[A-Z0-9]{4,}$/;
+
+/** Google Ads / consent / sGTM plumbing that looks like analytics but carries no GA4 events. */
+const NOISE_PATH = /^\/(ccm\/(s\/)?collect|ads\/ga-audiences|pagead\/|activity;|rmkt\/collect|_\/set_cookie|_\/service_worker\/|i\/v1\/logs|api\/surveys|s\/?$)/;
+
+export function isKnownNoise(url: string): boolean {
+  try {
+    return NOISE_PATH.test(new URL(url).pathname);
+  } catch {
+    return false;
+  }
+}
+
+const ANALYTICS_HOST = /analytics|posthog|googletagmanager|google-analytics|doubleclick|segment\.|mixpanel|amplitude|hotjar|clarity\.ms|plausible|matomo/i;
+const ANALYTICS_PATH = /(^|\/)(collect|batch|decide|flags|track|beacon|pixel)(\/|$)|\/(g|j)\/(s\/)?collect|\/e\/?$/i;
+
+/** Why a request looks like analytics traffic (even if we do not recognise it), or null for ordinary assets. */
+export function analyticsLikeReason(url: string): string | null {
+  try {
+    const u = new URL(url);
+    if (ANALYTICS_PATH.test(u.pathname)) return "path looks like an analytics endpoint";
+    if (u.searchParams.has("tid") || u.searchParams.has("api_key")) return "query carries a measurement id or api key";
+    if (ANALYTICS_HOST.test(u.hostname) && !/\.(js|css|json|html|map|png|jpe?g|gif|webp|svg|ico|woff2?|ttf|otf|mp4)$/i.test(u.pathname)) return "analytics-related host";
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+export function analyticsLike(url: string): boolean {
+  return analyticsLikeReason(url) !== null;
+}
+
+/** Consent Mode state Google appends to collect requests (gcd, gcs, dma, npa). */
+export function parseConsentSignals(params: URLSearchParams): Record<string, string> | undefined {
+  const out: Record<string, string> = {};
+  for (const key of ["gcd", "gcs", "dma", "npa"]) {
+    const v = params.get(key);
+    if (v !== null) out[key] = v;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
 }
 
 /** PostHog's own asset paths; docs require proxies to forward these, so they identify PostHog on any host. */
@@ -128,11 +175,26 @@ export function classifyAnalyticsRequest(
     return null;
   }
 
-  // GA4 Measurement Protocol.
-  if (/(^|\.)google-analytics\.com$/.test(host)) {
-    if (/^\/(g|j)\/collect$/.test(path)) {
-      return { kind: "beacon", dest: "ga4", events: parseGa4Collect(u.searchParams), raw: truncate(u.search) };
+  // GA4 Measurement Protocol, recognised by shape: Google's own hosts, a learned first-party
+  // (server-side GTM) host, or any host sending v=2 with a G- measurement id.
+  if (GA4_COLLECT_PATH.test(path)) {
+    const tid = u.searchParams.get("tid") ?? undefined;
+    const byShape = u.searchParams.get("v") === "2" && GA4_MEASUREMENT_ID.test(tid ?? "");
+    if (GOOGLE_GA4_HOST.test(host) || opts?.ga4Hosts?.has(host) || byShape) {
+      const consent = parseConsentSignals(u.searchParams);
+      return {
+        kind: "beacon",
+        dest: "ga4",
+        events: parseGa4Collect(u.searchParams, postData),
+        raw: truncate(u.search),
+        ...(tid ? { tid } : {}),
+        ...(consent ? { consent } : {}),
+      };
     }
+  }
+
+  // Legacy Universal Analytics.
+  if (/(^|\.)google-analytics\.com$/.test(host)) {
     if (path === "/collect" || path === "/analytics.js") {
       // Legacy Universal Analytics.
       if (path === "/collect") {
@@ -239,19 +301,26 @@ function base64ToChars(input: string): Uint8Array {
 const base64ToBytes = base64ToChars;
 
 /** GA4 /collect query params: en (event name), ep.* (params), tid (property). */
-export function parseGa4Collect(params: URLSearchParams): BeaconEvent[] {
-  const en = params.get("en");
-  if (!en) return [];
-  const props: Record<string, unknown> = {};
+export function parseGa4Collect(params: URLSearchParams, body?: string | null): BeaconEvent[] {
   const tid = params.get("tid");
-  if (tid) props.tid = tid;
-  for (const [k, v] of params.entries()) {
-    if (k.startsWith("ep.") || k.startsWith("epn.")) {
-      const propKey = k.replace(/^epn?\./, "");
-      props[propKey] = v.length > 120 ? v.slice(0, 120) + "…" : v;
+  const one = (p: URLSearchParams): BeaconEvent | null => {
+    const en = p.get("en");
+    if (!en) return null;
+    const props: Record<string, unknown> = {};
+    if (tid) props.tid = tid;
+    for (const [k, v] of p.entries()) {
+      if (k.startsWith("ep.") || k.startsWith("epn.")) {
+        props[k.replace(/^epn?\./, "")] = v.length > 120 ? v.slice(0, 120) + "…" : v;
+      }
     }
+    return { dest: "ga4", eventName: en, props };
+  };
+  // The first event rides in the query string; further events are batched in the POST body, one per line.
+  const events = [one(params)];
+  for (const line of (body ?? "").split(/\r?\n/).slice(0, 25)) {
+    if (line.includes("en=")) events.push(one(new URLSearchParams(line)));
   }
-  return [{ dest: "ga4", eventName: en, props }];
+  return events.filter((e): e is BeaconEvent => e !== null);
 }
 
 /** Legacy Universal Analytics collect (v=1): ec/ea/el hit params. */
@@ -281,6 +350,8 @@ export function beaconEvidencePayload(capture: CapturedRequest): Record<string, 
     method: capture.method,
     events: c.events.map((e) => ({ eventName: e.eventName, props: e.props })),
     ...(c.raw ? { raw: c.raw } : {}),
+    ...(c.tid ? { tid: c.tid } : {}),
+    ...(c.consent ? { consentSignals: c.consent } : {}),
   };
 }
 

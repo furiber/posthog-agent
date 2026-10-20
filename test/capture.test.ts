@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  analyticsLike,
   beaconEvidencePayload,
   classifyAnalyticsRequest,
+  isKnownNoise,
   firstEventName,
   parseCspViolation,
   parseGa4Collect,
@@ -146,6 +148,95 @@ describe("PostHog behind a first-party proxy (F6, 2026-10-20)", () => {
       tokenMasked: "sTMFPs…",
     });
     expect(parsePostHogInit("nothing to see here")).toBeNull();
+  });
+});
+
+describe("GA4 by shape, not host (F20, 2026-10-21; URLs from a real aa.co.nz page load)", () => {
+  const TAIL = "gtm=45je6aj0v886025420za20ozb6934724zd6934724xf1&_p=1792528403167&gcd=13l3l3l3l1l1&dma=0&npa=0";
+  const urls = {
+    sgtm: `https://analytics.aa.co.nz/g/collect?v=2&tid=G-PNYJZGH4F3&${TAIL}&en=page_view&ep.page_location=https%3A%2F%2Fwww.aa.co.nz%2Fmembership%2F`,
+    google: `https://analytics.google.com/g/collect?v=2&tid=G-EMQQPZVZVY&${TAIL}&en=page_view`,
+    doubleclick: `https://stats.g.doubleclick.net/g/collect?v=2&tid=G-EMQQPZVZVY&cid=1963964415.1792528405&${TAIL}`,
+    sCollect: `https://analytics.google.com/g/s/collect?dma=0&npa=0&gcd=13l3l3l3l1l1&gtm=45j91e6aj0v886025420z99168656781za20ozb6934724zd6934724xf1`,
+  };
+
+  it("recognises GA4 collect on analytics.google.com, doubleclick and a first-party server-side GTM host", () => {
+    for (const [name, url] of Object.entries(urls)) {
+      const out = classifyAnalyticsRequest(url, "GET", null);
+      expect(out?.kind, name).toBe("beacon");
+      if (out?.kind === "beacon") expect(out.dest, name).toBe("ga4");
+    }
+  });
+
+  it("reads the event, the measurement id and the Consent Mode signals", () => {
+    const out = classifyAnalyticsRequest(urls.sgtm, "GET", null);
+    if (out?.kind !== "beacon") return expect.unreachable("expected beacon");
+    expect(out.events[0]).toMatchObject({ eventName: "page_view", props: { tid: "G-PNYJZGH4F3" } });
+    expect(out.tid).toBe("G-PNYJZGH4F3");
+    expect(out.consent).toEqual({ gcd: "13l3l3l3l1l1", dma: "0", npa: "0" });
+  });
+
+  it("keeps the measurement id and consent signals on a collect request that carries no event", () => {
+    const out = classifyAnalyticsRequest(urls.doubleclick, "GET", null);
+    if (out?.kind !== "beacon") return expect.unreachable("expected beacon");
+    expect(out.events).toHaveLength(0);
+    expect(out.tid).toBe("G-EMQQPZVZVY");
+    expect(out.consent?.gcd).toBe("13l3l3l3l1l1");
+  });
+
+  it("does not treat the sGTM cookie endpoint or Google Ads endpoints as GA4 events", () => {
+    const noise = [
+      "https://analytics.aa.co.nz/_/set_cookie?val=1pDGAujVRmt6fADmLHKQ",
+      "https://www.google.com/ccm/collect?rcb=11&frm=0&apvc=1&ae=g",
+      "https://ad.doubleclick.net/ccm/s/collect?auid=274576725.1792528404",
+      "https://www.google.co.nz/ads/ga-audiences?v=1&t=sr&tid=G-EMQQPZVZVY",
+      "https://analytics.aa.co.nz/_/service_worker/6a60/sw_iframe.html",
+      "https://googleads.g.doubleclick.net/pagead/id",
+      "https://internal-c.posthog.com/i/v1/logs?ip=0",
+      "https://internal-c.posthog.com/api/surveys/?token=x",
+      "https://internal-c.posthog.com/s/?ip=1&ver=1.200",
+    ];
+    for (const url of noise) {
+      expect(classifyAnalyticsRequest(url, "GET", null), url).toBeNull();
+      expect(isKnownNoise(url), url).toBe(true);
+    }
+  });
+
+  it("recognises an unknown first-party host by shape (v=2 and a G- tid), but not a look-alike", () => {
+    expect(classifyAnalyticsRequest("https://metrics.example.com/g/collect?v=2&tid=G-ABC1234567&en=scroll", "GET", null)?.kind).toBe("beacon");
+    expect(classifyAnalyticsRequest("https://example.com/g/collect?foo=1", "GET", null)).toBeNull();
+    expect(classifyAnalyticsRequest("https://example.com/g/collect?v=2&foo=1", "GET", null)).toBeNull();
+  });
+
+  it("learns a first-party GA4 host, then accepts its collect requests without a tid", () => {
+    const opts = { ga4Hosts: new Set(["metrics.example.com"]) };
+    expect(classifyAnalyticsRequest("https://metrics.example.com/g/collect?v=2&en=scroll", "GET", null)).toBeNull();
+    const out = classifyAnalyticsRequest("https://metrics.example.com/g/collect?v=2&en=scroll", "GET", null, opts);
+    expect(out?.kind === "beacon" && out.dest === "ga4").toBe(true);
+    expect(classifyAnalyticsRequest("https://other.example.com/g/collect?v=2&en=scroll", "GET", null, opts)).toBeNull();
+  });
+
+  it("reads extra events batched in the POST body", () => {
+    const body = "en=scroll&epn.percent_scrolled=90\nen=click&ep.link_url=https%3A%2F%2Fx.com";
+    const out = classifyAnalyticsRequest("https://analytics.google.com/g/collect?v=2&tid=G-ABC1234567&en=page_view", "POST", body);
+    if (out?.kind !== "beacon") return expect.unreachable("expected beacon");
+    expect(out.events.map((e) => e.eventName)).toEqual(["page_view", "scroll", "click"]);
+    expect(out.events[1]!.props.percent_scrolled).toBe("90");
+  });
+
+  it("analyticsLike spots analytics-looking requests and ignores ordinary assets", () => {
+    for (const url of [urls.sgtm, urls.google, "https://metrics.example.com/e/?ip=1", "https://x.example.com/a?api_key=abc123456", "https://www.google.com/ccm/collect?x=1"]) {
+      expect(analyticsLike(url), url).toBe(true);
+    }
+    for (const url of [
+      "https://cdn.example.com/app.js",
+      "https://fonts.googleapis.com/css2?family=Open+Sans",
+      "https://example.com/logo.png",
+      "https://posthog.com/page-data/sq/d/3244896695.json",
+      "https://analytics.example.com/assets/app.json",
+    ]) {
+      expect(analyticsLike(url), url).toBe(false);
+    }
   });
 });
 
