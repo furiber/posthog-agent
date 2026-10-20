@@ -172,6 +172,14 @@ Multi-user accounts, billing, scheduled monitoring, PDF export, languages other 
 2. **One deliverable or two:** the Agent SDK agent (Day 3) is the challenge entry; the Cloudflare agent plus UI (Day 5) is the product. Both ship from the same shared core. Confirm that is the intent, or say which one is "the delivery".
 3. **Day 5 UI size:** report view plus evidence drawer and run history, or just the first two?
 
+## 11. Decisions (2026-10-21)
+
+1. **Calendar:** as drafted: Day 1 Wed 21, Day 2 Thu 22, Day 3 Fri 23 (challenge post), Day 4 Mon 26, Day 5 Tue 27 Oct.
+2. **Deliverable:** both, from one shared detection core: the Agent SDK entry on Day 3, the Cloudflare agent with UI on Day 5.
+3. **Day 5 UI:** report view, evidence drawer and tag-state badges; run history is out of scope for the five days.
+
+Status: the plan is awaiting approval to start Day 1 (no code written).
+
 ## Findings log (additions on 2026-10-21)
 
 | ID | Finding | Date found | Status | Date fixed |
