@@ -37,9 +37,27 @@ OpenRouter documents this path (Anthropic-compatible endpoint). `challenge/env.t
 6. **Do not rely on `maxBudgetUsd`.** The CLI sees inflated usage numbers from OpenRouter and stops with "Reached maximum budget ($0.05)" on a call that costs about a quarter of a cent. Use `maxTurns`, a wall-clock timeout (we abort after 90 s) and a spend limit on the OpenRouter key itself.
 7. Claude Code may not work correctly with non-Anthropic models; stay on `anthropic/…` slugs.
 
+## The first agent (challenge Day 1): `npm run challenge:agent`
+
+```bash
+npm run challenge:agent -- https://www.aa.co.nz/membership
+```
+
+One sentence: *the agent reads a website and tells you which analytics tags it has, whether they load and fire, and what is wrong, and it says what it could not verify.*
+
+- **One tool, `capture_page(url)`:** loads the page in a real local Chromium (settle: network idle, scroll, dwell) and returns facts: tags with a proven state (loaded and firing, blocked, loaded but not firing, and so on), the analytics requests that fired, Consent Mode signals, CSP blocks, third-party hosts and what each was recognised as, and analytics-looking requests it could not classify. The judgement lives in `challenge/core.ts` (`summarizeCapture`), which reuses the Cloudflare agent's detection code, so the model quotes states instead of inventing them.
+- **Guardrails:** only that tool is allowed (`allowedTools`, `permissionMode: dontAsk`, an explicit deny list for Bash, Read, Write, Edit, WebFetch and the rest); the tool refuses any host other than the site being audited and stops after 3 pages; page text is declared data, not instructions; 6 model turns and a 240 s wall-clock cap (not `maxBudgetUsd`, see above); no user settings, plugins or MCP servers loaded; the host's Claude login is stripped from the environment.
+- **Model role:** `sonnet` (`anthropic/claude-sonnet-5.5` via OpenRouter); `--model haiku` for a cheaper run, `--max-turns N` to change the cap.
+- **Runs on 2026-10-21:** aa.co.nz in 24 to 26 s and 3 turns (both GA4 ids and GTM `loaded_and_firing`, `page_view` seen, Consent Mode signals reported, ad traffic and an unidentified third-party host listed as unverified); nobodycame.app in 17 s (PostHog `blocked` by CSP `script-src`, with the fix).
+- **Known weakness:** the model speculates about what the Consent Mode `gcd` string means. It hedges, but a decoder in the tool would be better.
+
 ## Files
 
 | File | Purpose |
 |---|---|
 | `challenge/env.ts` | resolves the OpenRouter key and builds the SDK environment (pure, unit-tested in `test/challengeEnv.test.ts`) |
 | `challenge/check.ts` | the OpenRouter setup check, run by `npm run challenge:check:openrouter` |
+| `challenge/agent.ts` | the Agent SDK agent CLI, `npm run challenge:agent` |
+| `challenge/core.ts` | pure core: capture summary, same-site guard, locked-down options, system prompt (unit-tested in `test/challengeCore.test.ts`) |
+| `challenge/browser.ts` | the tool's browser: loads a page and records the network, console and runtime objects |
+| `challenge/sources.ts` | finds the OpenRouter key (process env, `challenge/.env`, repo `.env`) |
