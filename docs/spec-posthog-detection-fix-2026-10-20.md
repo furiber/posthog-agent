@@ -38,6 +38,18 @@ Pure-function rule stays: classification remains unit-testable with no browser. 
 
 **Check current PostHog docs via Context7 before coding:** ingestion paths changed over time (`/decide` vs `/flags`, `/e/` vs `/i/v0/e/`, `/s/` for session replay), and the proxy guidance. Do not rely on the paths in this spec from memory.
 
+### 2a. Corrections after the Context7 check and a live probe (2026-10-20)
+
+Checked `/posthog/posthog.com` and `/posthog/posthog-js` docs, then probed nobodycame.app in a browser. Changes to the design above:
+
+1. **No `phc_` requirement.** Docs use `<ph_project_token>`; the posthog-js demo token is `sTMFPsFhdP1Ssg`. Tokens are not guaranteed to start with `phc_`.
+2. **Ingestion paths are not stable.** `rewriteRequestPath` (posthog-js 1.416.0+) lets a site rename `/e/`, `/i/v0/e/`, `/s/`, `/flags/`, `/array/`, `/static/`. So path matching alone is unreliable for unknown hosts; use learned hosts. Standard set to match on learned hosts: `/e/`, `/i/v0/e/`, `/batch`, `/s/`, `/flags`, `/decide`.
+3. **`/flags/` is the current feature-flag endpoint**; `/decide` still appears in docs. Classify both as config beacons with zero events.
+4. **Host-agnostic asset signal.** Docs require proxies to forward `/static/array.js`, `/static/<version>/array.js` and `/array/<token>/config.js`. These paths identify PostHog on any host, and they load *before* any ingestion beacon, so the collector learns the host in time.
+5. **Live probe result:** on nobodycame.app `window.posthog` was still the loader stub (no `__loaded`, no `config`), while `https://t.nobodycame.app/static/array.js` had loaded. So the runtime probe cannot be the primary signal. Primary signals become: (a) asset-path shape, (b) `posthog.init(...)` parsed from script bodies (gives `api_host`), (c) runtime object when fully loaded.
+6. **False-positive risk accepted:** `/static/array.js` on an unrelated site. Mitigated because every evidence item stores the full URL for the reader to judge.
+7. **F7 schema:** `GapItem` requires at least one evidence ID, so the "inconclusive" note cannot be a gap row. It becomes new optional Report fields `outcome` and `detectionNote`.
+
 ## 3. F7 design: honest empty state
 
 When the visited pages produced **no tag evidence and no beacons**:
@@ -85,9 +97,21 @@ Live (manual, `cf dev`, pageBudget 3):
 5. `npm test`, `npm run typecheck`, live reruns.
 6. Update findings log with dates; add a `CHANGELOG.md` entry (user-visible: PostHog now detected behind proxies).
 
+## 8. Build and verification results (2026-10-20)
+
+- Built tests-first. 56/56 tests pass (was 48), `npm run typecheck` clean.
+- Deviation from section 2a: `/s/` (session replay) is not classified, to avoid zero-event noise rows; `/flags` and `/decide` are.
+- **Live rerun, nobodycame.app:** tag inventory now lists PostHog twice: the proxied `https://t.nobodycame.app/static/array.js` and the `/ph.js` init (`phc_tp… → t.nobodycame.app`). Before: "No analytics tags found".
+- **Live rerun, coffeerouletteapp.com:** tags unchanged (gtag, gtm, inline gtm). Event table had `page_view` only this time; the earlier run also had `scroll`. This is crawl-to-crawl variance, not a regression from this change, but it confirms F8-style instability.
+- **New finding F9 (real bug on nobodycame.app):** the site's own Content-Security-Policy is `script-src 'self' 'unsafe-inline' https://eu.i.posthog.com`, which blocks `https://t.nobodycame.app/static/array.js` (console shows the CSP violation). PostHog never initialises there, so no events are sent. The agent's "no events on the wire" was correct. Fix on the site: add `https://t.nobodycame.app` to `script-src` and `connect-src`.
+- **New finding F10:** the agent still cannot say *why* a detected tag sends nothing. It recommended consent changes and claimed beacons "fire unconditionally" when zero beacons fired. A "tag present, no beacons" gap (citing the CSP console error when available) is the next spec.
+- The F7 empty path was covered by unit tests only; no live site with zero analytics was crawled.
+
 ## Findings log
 
 | ID | Finding | Date found | Status | Date fixed |
 |---|---|---|---|---|
-| F6 | PostHog missed behind renamed script and proxy host | 2026-10-20 | Spec drafted | n/a |
-| F7 | Empty detection still produces invented recommendations | 2026-10-20 | Spec drafted | n/a |
+| F6 | PostHog missed behind renamed script and proxy host | 2026-10-20 | Fixed (unit tests + live rerun on nobodycame.app) | 2026-10-20 |
+| F7 | Empty detection still produces invented recommendations | 2026-10-20 | Fixed (unit tests; not run live) | 2026-10-20 |
+| F9 | nobodycame.app CSP blocks its own PostHog proxy script, so no events are sent | 2026-10-20 | Open (site fix, not in this repo) | n/a |
+| F10 | Agent cannot explain "tag present but no beacons"; invents consent advice and a false "beacons fire unconditionally" claim | 2026-10-20 | Open | n/a |

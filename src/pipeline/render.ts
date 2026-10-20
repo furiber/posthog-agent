@@ -14,6 +14,18 @@ export function renderMarkdown(report: Report): string {
   }
   L.push("");
 
+  if (report.outcome === "no_analytics_detected") {
+    L.push(`## 1. Tag inventory`);
+    L.push("");
+    L.push(`**No analytics detected** on the ${report.pagesVisited.length} pages visited.`);
+    L.push("");
+    L.push(`_${report.detectionNote ?? "Detection inconclusive."}_`);
+    L.push("");
+    L.push(`Pages visited: ${report.pagesVisited.map(shortUrl).join(", ") || "—"}`);
+    L.push("");
+    return L.join("\n");
+  }
+
   L.push(`## 1. Tag inventory`);
   L.push("");
   if (report.tagInventory.length === 0) {

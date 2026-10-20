@@ -7,6 +7,7 @@ import { runCrawl, type CrawlShared } from "./pipeline/crawl";
 import { adversarialReview } from "./pipeline/review";
 import { applyCritiques, roundCritiqueRows } from "./pipeline/revise";
 import { finalGate } from "./pipeline/gate";
+import { asEmptyDetectionReport } from "./pipeline/empty";
 import { renderMarkdown } from "./pipeline/render";
 import { buildEventRows, buildTagInventory, synthesizeDraft } from "./pipeline/synthesize";
 import { deriveConvention } from "./pipeline/convention";
@@ -198,6 +199,43 @@ async function runPipeline(
   shared.crawlObs.end({ output: { ...crawlSummary } });
   sse("phase", { name: "crawl", status: "done", pagesVisited: crawlSummary.pagesVisited.length, pagesFailed: crawlSummary.pagesFailed.length, evidenceCount: crawlSummary.evidenceCount });
 
+  // Shared tail: render, persist, trace, and close the stream.
+  const finish = async (final: Report, notes: string[]): Promise<void> => {
+    if (notes.length > 0) {
+      store.log("gate_notes", notes);
+      sse("gate_notes", { notes });
+    }
+    const markdown = renderMarkdown(final);
+    store.persistReport(markdown, JSON.stringify(final));
+    trace.end(
+      { sections: { tags: final.tagInventory.length, events: final.events.length, gaps: final.gaps.length, plan: final.trackingPlan.length }, partial: final.partial },
+      { site, evidenceCount: store.listEvidence().length, pagesVisited: final.pagesVisited.length, tookMs: Date.now() - started, report_markdown: markdown },
+    );
+    await trace.flush(agent.env);
+    if (trace.ingest) sse("trace", trace.ingest);
+    sse("report", { markdown, report: final });
+    store.log("run_finished", { partial: final.partial, evidence: store.listEvidence().length });
+    sse("done", { runId, partial: final.partial, outcome: final.outcome ?? "audited", evidenceCount: store.listEvidence().length, tookMs: Date.now() - started });
+  };
+
+  // F7: nothing detected on pages we did visit -> honest empty report, no model calls.
+  if (crawlSummary.pagesVisited.length > 0) {
+    const emptyReport = asEmptyDetectionReport({
+      ...(await partialReport("", budgetExhausted)),
+      partial: budgetExhausted,
+      error: undefined,
+      pagesVisited: crawlSummary.pagesVisited,
+      pagesFailed: crawlSummary.pagesFailed,
+      tagInventory: buildTagInventory(store),
+      events: buildEventRows(store),
+    });
+    if (emptyReport) {
+      sse("phase", { name: "synthesize", status: "skipped", reason: "no_analytics_detected" });
+      await finish(emptyReport, []);
+      return;
+    }
+  }
+
   // ---------------- Phases 2-4: synthesize -> validate -> gate ----------------
   // Any crash here hard-stops into a partial-evidence error report — never fabrication.
   let report: Report;
@@ -336,21 +374,7 @@ async function runPipeline(
     await trace.flush(agent.env);
     sse("phase", { name: "gate", status: "failed-partial" });
   }
-  if (gateNotes.length > 0) {
-    store.log("gate_notes", gateNotes);
-    sse("gate_notes", { notes: gateNotes });
-  }
-  const markdown = renderMarkdown(report);
-  store.persistReport(markdown, JSON.stringify(report));
-  trace.end(
-    { sections: { tags: report.tagInventory.length, events: report.events.length, gaps: report.gaps.length, plan: report.trackingPlan.length }, partial: report.partial },
-    { site, evidenceCount: store.listEvidence().length, pagesVisited: report.pagesVisited.length, tookMs: Date.now() - started, report_markdown: markdown },
-  );
-  await trace.flush(agent.env);
-  if (trace.ingest) sse("trace", trace.ingest);
-  sse("report", { markdown, report });
-  store.log("run_finished", { partial: report.partial, evidence: store.listEvidence().length });
-  sse("done", { runId, partial: report.partial, evidenceCount: store.listEvidence().length, tookMs: Date.now() - started });
+  await finish(report, gateNotes);
 }
 
 function draftStatementFor(draft: Report, critique: Critique): string {

@@ -3,7 +3,7 @@ import { z } from "zod";
 import type { AgentConfig } from "../config";
 import { LOW_EFFORT_PROVIDER_OPTIONS, ModelCallError, loopModel } from "../models";
 import type { BrowserPool, PageSession } from "../browser/driver";
-import { beaconEvidencePayload } from "../browser/capture";
+import { beaconEvidencePayload, parsePostHogInit } from "../browser/capture";
 import {
   CaptureCollector,
   fireInteraction,
@@ -318,6 +318,31 @@ function buildTools(shared: CrawlShared) {
             payload: { scriptSrc: s.src ?? null, inline: s.src ? null : s.note, note: "tag script found in DOM" },
           });
           if (e) ids.push(e.id);
+        }
+        // PostHog behind a renamed first-party loader: tag evidence from the script
+        // body, and learn the ingestion host so proxied beacons classify as PostHog.
+        for (const s of out.posthogInitScripts) {
+          const init = parsePostHogInit(s.snippet);
+          shared.collector.learnHost(init?.apiHost);
+          const e = shared.store.appendEvidence({
+            pageUrl: url,
+            timestamp: new Date().toISOString(),
+            kind: "snippet",
+            source: "capture",
+            dest: "posthog",
+            captureId: `D:${url}:phinit:${s.src}`,
+            payload: {
+              scriptSrc: s.src,
+              tagId: init ? `${init.tokenMasked}${init.apiHost ? ` → ${init.apiHost}` : ""}` : null,
+              note: "posthog.init found in script body",
+            },
+          });
+          if (e) ids.push(e.id);
+        }
+        try {
+          if (out.posthogRuntime?.apiHost) shared.collector.learnHost(new URL(out.posthogRuntime.apiHost).hostname);
+        } catch {
+          /* relative or malformed api_host: ignore */
         }
         if (out.initCalls.length > 0) {
           const e = shared.store.appendEvidence({

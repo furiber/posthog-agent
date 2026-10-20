@@ -5,6 +5,7 @@ import {
   firstEventName,
   parseGa4Collect,
   parsePostHogEvents,
+  parsePostHogInit,
   resolvePostHogEvents,
 } from "../src/browser/capture";
 
@@ -92,6 +93,58 @@ describe("classifyAnalyticsRequest (on-the-wire detection)", () => {
   it("returns null for unrelated traffic (never fabricates)", () => {
     expect(classifyAnalyticsRequest("https://example.com/api/data", "POST", "{}")).toBeNull();
     expect(classifyAnalyticsRequest("https://cdn.example.com/app.js", "GET", null)).toBeNull();
+  });
+});
+
+describe("PostHog behind a first-party proxy (F6, 2026-10-20)", () => {
+  it("recognises the PostHog asset path on any host, and reports the proxy host", () => {
+    for (const url of [
+      "https://t.example.com/static/array.js",
+      "https://t.example.com/static/1.380.0/array.js",
+      "https://t.example.com/array/sTMFPsFhdP1Ssg/config.js",
+    ]) {
+      const out = classifyAnalyticsRequest(url, "GET", null);
+      expect(out?.kind).toBe("script");
+      if (out?.kind === "script") expect(out.dest).toBe("posthog");
+    }
+  });
+
+  it("does not claim unrelated first-party scripts (ph.js alone is not enough)", () => {
+    expect(classifyAnalyticsRequest("https://example.com/ph.js", "GET", null)).toBeNull();
+    expect(classifyAnalyticsRequest("https://example.com/static/app.js", "GET", null)).toBeNull();
+  });
+
+  it("classifies ingestion beacons on a learned proxy host, with or without a body", () => {
+    const opts = { posthogHosts: new Set(["t.example.com"]) };
+    const body = JSON.stringify({ event: "$pageview", properties: { $current_url: "https://example.com/" } });
+    const withBody = classifyAnalyticsRequest("https://t.example.com/e/?ip=1", "POST", body, opts);
+    expect(withBody?.kind).toBe("beacon");
+    if (withBody?.kind === "beacon") {
+      expect(withBody.dest).toBe("posthog");
+      expect(withBody.events[0].eventName).toBe("$pageview");
+    }
+    const gzipped = classifyAnalyticsRequest("https://t.example.com/i/v0/e/", "POST", null, opts);
+    expect(gzipped?.kind === "beacon" && gzipped.dest === "posthog").toBe(true);
+    const flags = classifyAnalyticsRequest("https://t.example.com/flags/?v=2", "POST", "{}", opts);
+    expect(flags?.kind === "beacon" && flags.events.length === 0).toBe(true);
+  });
+
+  it("ignores the same paths on a host that was not learned", () => {
+    expect(classifyAnalyticsRequest("https://t.example.com/e/", "POST", "{}")).toBeNull();
+    expect(
+      classifyAnalyticsRequest("https://other.example.com/e/", "POST", "{}", { posthogHosts: new Set(["t.example.com"]) }),
+    ).toBeNull();
+  });
+
+  it("learns the api host and masked token from a script body containing posthog.init", () => {
+    const text =
+      '!function(){}();posthog.init("phc_tpSo7koHQsqe",{api_host:"https://t.nobodycame.app",ui_host:"https://eu.posthog.com",before_send:function(ev){return ev}});';
+    expect(parsePostHogInit(text)).toEqual({ apiHost: "t.nobodycame.app", tokenMasked: "phc_tp…" });
+    expect(parsePostHogInit("posthog.init('sTMFPsFhdP1Ssg', {api_host: 'https://us.i.posthog.com'})")).toEqual({
+      apiHost: "us.i.posthog.com",
+      tokenMasked: "sTMFPs…",
+    });
+    expect(parsePostHogInit("nothing to see here")).toBeNull();
   });
 });
 

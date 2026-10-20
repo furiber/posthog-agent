@@ -13,21 +13,45 @@ import type { BeaconEvent, CapturedRequest, ClassifiedRequest, Destination } fro
 
 const MAX_RAW = 400;
 
+/** Hosts learned at runtime to be a PostHog proxy (first-party ingestion host). */
+export interface ClassifyOpts {
+  posthogHosts?: ReadonlySet<string>;
+}
+
+/** PostHog's own asset paths; docs require proxies to forward these, so they identify PostHog on any host. */
+const POSTHOG_ASSET_PATH = /^\/static\/(\d[\w.-]*\/)?array\.js$|^\/array\/[A-Za-z0-9_-]{6,}\/config\.js$/;
+
 /** A script src is an analytics tag script (not site assets on analytics hosts). */
-export function isAnalyticsScriptSrc(src: string): boolean {
+export function isAnalyticsScriptSrc(src: string, opts?: ClassifyOpts): boolean {
   try {
     const u = new URL(src);
-    return isAnalyticsScriptUrl(u.hostname.toLowerCase(), u.pathname);
+    return isAnalyticsScriptUrl(u.hostname.toLowerCase(), u.pathname, opts);
   } catch {
     return false;
   }
 }
 
-function isAnalyticsScriptUrl(host: string, path: string): boolean {
+/** Pull the api host and a masked token out of a script body that calls posthog.init(...). */
+export function parsePostHogInit(text: string): { apiHost?: string; tokenMasked?: string } | null {
+  const m = text.match(/posthog\.init\s*\(\s*["']([^"']{6,})["']/);
+  if (!m) return null;
+  const chunk = text.slice(m.index ?? 0, (m.index ?? 0) + 800);
+  const api = chunk.match(/api_host\s*:\s*["']([^"']+)["']/)?.[1];
+  let apiHost: string | undefined;
+  try {
+    apiHost = api ? new URL(api).hostname.toLowerCase() : undefined;
+  } catch {
+    apiHost = undefined;
+  }
+  return { ...(apiHost ? { apiHost } : {}), tokenMasked: `${m[1]!.slice(0, 6)}…` };
+}
+
+function isAnalyticsScriptUrl(host: string, path: string, opts?: ClassifyOpts): boolean {
   // PostHog: the posthog-js snippet itself, its loader config, and site init
   // wrappers (posthog-init.js) — never unrelated assets on posthog domains.
   const file = decodeURIComponent(path.split("/").pop() ?? "");
-  if (host.includes("posthog")) {
+  if (POSTHOG_ASSET_PATH.test(path)) return true;
+  if (host.includes("posthog") || opts?.posthogHosts?.has(host)) {
     if (/^(posthog|array)(\.min)?\.js$/i.test(file)) return true;
     if (/^posthog-[a-z0-9-]*\.js$/i.test(file)) return true;
     if (/\/array\/[A-Za-z0-9_-]{6,}\/config\.js$/i.test(path)) return true;
@@ -48,6 +72,7 @@ export function classifyAnalyticsRequest(
   requestUrl: string,
   method: string,
   postData?: string | null,
+  opts?: ClassifyOpts,
 ): ClassifiedRequest | null {
   let u: URL;
   try {
@@ -57,9 +82,10 @@ export function classifyAnalyticsRequest(
   }
   const host = u.hostname.toLowerCase();
   const path = u.pathname;
+  const posthogHost = host.includes("posthog") || Boolean(opts?.posthogHosts?.has(host));
 
   // Tag script loads (feed the tag inventory).
-  if (isAnalyticsScriptUrl(host, path)) {
+  if (isAnalyticsScriptUrl(host, path, opts)) {
     if (/(^|\.)googletagmanager\.com$/.test(host)) {
       if (/^\/gtm\.js$/.test(path)) {
         return { kind: "script", dest: "gtm", src: requestUrl, tagId: u.searchParams.get("id") ?? undefined };
@@ -82,13 +108,13 @@ export function classifyAnalyticsRequest(
     };
   }
 
-  // PostHog ingestion endpoints.
-  if (host.includes("posthog")) {
-    if (/^\/(i\/v0\/)?e\/?$/.test(path) || path === "/batch" || path.startsWith("/batch")) {
+  // PostHog ingestion endpoints (on posthog domains or a learned first-party proxy).
+  if (posthogHost) {
+    if (/^\/(i\/v0\/)?e\/?$/.test(path) || path.startsWith("/batch")) {
       return { kind: "beacon", dest: "posthog", events: parsePostHogEvents(postData), raw: truncate(postData) };
     }
-    if (path.startsWith("/decide")) {
-      // Config endpoint: beacon evidence, but no events to report.
+    if (path.startsWith("/decide") || path.startsWith("/flags")) {
+      // Config endpoints (/flags replaced /decide): beacon evidence, but no events to report.
       return { kind: "beacon", dest: "posthog", events: [], raw: truncate(postData) };
     }
     return null;

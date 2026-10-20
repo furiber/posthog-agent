@@ -14,6 +14,10 @@ export interface DomInspection {
   initCalls: string[];
   dataLayer: string[] | null;
   consent: { banner: string | null; api: string | null };
+  /** First-party scripts whose body calls posthog.init(...) (a renamed loader such as /ph.js). */
+  posthogInitScripts: { src: string; snippet: string }[];
+  /** window.posthog state: the loader stub or the loaded library. */
+  posthogRuntime: { loaded: boolean; apiHost: string | null } | null;
 }
 
 export interface InteractionResult {
@@ -39,6 +43,12 @@ export class CaptureCollector {
     bodyText: () => string | null;
   }[] = [];
   private readonly resolved = new Map<string, CapturedRequest>();
+  /** First-party hosts learned to serve PostHog (asset path seen, or posthog.init api_host). */
+  readonly posthogHosts = new Set<string>();
+
+  learnHost(host: string | undefined): void {
+    if (host) this.posthogHosts.add(host.toLowerCase());
+  }
 
   /** Attach a request listener to a page. Never throws. */
   attach(page: Page, pageUrl: string): void {
@@ -50,8 +60,9 @@ export class CaptureCollector {
         postDataBuffer?: () => Uint8Array | null;
       }) => {
         try {
-          const classified = classifyAnalyticsRequest(req.url(), req.method(), null);
+          const classified = classifyAnalyticsRequest(req.url(), req.method(), null, { posthogHosts: this.posthogHosts });
           if (!classified) return;
+          if (classified.kind === "script" && classified.dest === "posthog") this.learnHost(new URL(req.url()).hostname);
           this.seq += 1;
           this.pending.push({
             captureId: `C${this.seq}`,
@@ -87,7 +98,7 @@ export class CaptureCollector {
     } catch {
       bodyText = null;
     }
-    let classified = classifyAnalyticsRequest(entry.requestUrl, entry.method, bodyText);
+    let classified = classifyAnalyticsRequest(entry.requestUrl, entry.method, bodyText, { posthogHosts: this.posthogHosts });
     if (!classified) return null;
     if (classified.kind === "beacon" && classified.dest === "posthog" && classified.events.length === 0) {
       const bytes = entry.bodyBuffer();
@@ -232,9 +243,32 @@ async function detectComplexity(page: Page): Promise<boolean> {
 
 /** Extract loaded tag scripts, config/init calls, dataLayer contents, consent state. */
 export async function inspectDom(page: Page): Promise<DomInspection> {
-  return page.evaluate(() => {
+  return page.evaluate(async () => {
     const truncate = (s: string, n: number) => (s.length > n ? s.slice(0, n) + "…" : s);
     const scripts = Array.from(document.scripts);
+    // Renamed first-party loaders (e.g. /ph.js) keep posthog.init in an external
+    // script, so inline scanning misses them: read same-origin script bodies.
+    const posthogInitScripts: { src: string; snippet: string }[] = [];
+    for (const s of scripts.slice(0, 40)) {
+      try {
+        if (!s.src || new URL(s.src, location.href).origin !== location.origin) continue;
+        const text = (await (await fetch(s.src, { credentials: "omit" })).text()).slice(0, 400_000);
+        const m = text.match(/posthog\.init\s*\(/);
+        if (m) posthogInitScripts.push({ src: s.src, snippet: truncate(text.slice(m.index ?? 0, (m.index ?? 0) + 300), 300) });
+      } catch {
+        /* unreadable script: skip */
+      }
+      if (posthogInitScripts.length >= 4) break;
+    }
+    let posthogRuntime: { loaded: boolean; apiHost: string | null } | null = null;
+    try {
+      const ph = (window as unknown as { posthog?: { capture?: unknown; __loaded?: boolean; config?: { api_host?: string } } }).posthog;
+      if (ph && typeof ph.capture === "function") {
+        posthogRuntime = { loaded: Boolean(ph.__loaded), apiHost: ph.config?.api_host ?? null };
+      }
+    } catch {
+      posthogRuntime = null;
+    }
     // Same predicate as the wire-side classifier: posthog-js snippets, site
     // init wrappers (posthog-init.js), array loader configs, GTM/gtag/GA
     // scripts — never unrelated assets on analytics hosts.
@@ -346,6 +380,8 @@ export async function inspectDom(page: Page): Promise<DomInspection> {
       initCalls: initCalls.slice(0, 12),
       dataLayer,
       consent: { banner, api },
+      posthogInitScripts,
+      posthogRuntime,
     };
   });
 }

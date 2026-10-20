@@ -159,6 +159,9 @@ export const ReportSchema = z.object({
   partial: z.boolean(),
   budgetExhausted: z.boolean().optional(),
   error: z.string().optional(),
+  /** Set when the crawl found no analytics at all; synthesis and validation were skipped. */
+  outcome: z.enum(["no_analytics_detected"]).optional(),
+  detectionNote: z.string().optional(),
 });
 export type Report = z.infer<typeof ReportSchema>;
 
